@@ -157,6 +157,29 @@ def main() -> None:
             # mask has 11 columns for the 11 INPUT frames only).
             check("target never imputed (mask covers input only)", mask.shape[1] == 11)
 
+        # Causal-track metadata + forecast-lead audit.
+        for key in ("latest_cma_fix_time", "cma_fix_age_sec",
+                    "target_gpm_match_offset", "actual_anchor_gpm_time",
+                    "actual_target_gpm_time"):
+            ok = "meta" in f and key in f["meta"]
+            check(f"/meta/{key} present", ok, key)
+        if (n_samples > 0 and "meta" in f
+                and "actual_anchor_gpm_time" in f["meta"]
+                and "actual_target_gpm_time" in f["meta"]):
+            lead = (f["meta"]["actual_target_gpm_time"][:]
+                    - f["meta"]["actual_anchor_gpm_time"][:])
+            # Declared lead is one 0.5h step; allow nearest-match tolerance.
+            check("forecast lead ~1 step (1800s)",
+                  bool((np.abs(lead - STEP_SEC) <= STEP_SEC).all()),
+                  f"lead range [{lead.min()}, {lead.max()}]")
+        if n_samples > 0 and "meta" in f and "cma_fix_age_sec" in f["meta"]:
+            age = f["meta"]["cma_fix_age_sec"][:]
+            check("CMA fix age >= 0 (no future fix)", bool((age >= 0).all()))
+        if n_samples > 0 and "meta" in f and "target_gpm_match_offset" in f["meta"]:
+            tgt_off = f["meta"]["target_gpm_match_offset"][:]
+            check("target GPM offset within ±1800s",
+                  bool((np.abs(tgt_off) <= STEP_SEC).all()))
+
         # Attributes.
         if "schema_version" in f.attrs:
             check("schema_version == v2", str(f.attrs["schema_version"]) == SCHEMA_VERSION,

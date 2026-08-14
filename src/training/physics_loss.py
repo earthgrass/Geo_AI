@@ -79,7 +79,9 @@ class PhysicsInformedLoss(nn.Module):
             self._validate_oro_config(self.oro_config)
 
         if components is None:
-            components = ["rain", "smooth", "extreme"]
+            # Base experiment defaults to MSE ONLY. Smoothness / extreme /
+            # orographic terms are explicit opt-in (never enabled implicitly).
+            components = ["rain"]
             if oro_enabled:
                 components.append("oro")
         self.components = list(components)

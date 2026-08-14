@@ -62,17 +62,20 @@ CHANNEL_NAMES = [
     'precipitation',     # 0: GPM IMERG real precipitation (mm/h)
     'center_wind_speed', # 1: CMA observed max wind speed, broadcast spatially (m/s)
     'center_pressure',   # 2: CMA observed central pressure, broadcast spatially (hPa)
-    'distance_center',   # 3: Distance from storm center (km)
-    'dx',                # 4: Zonal relative coordinate (km, east-positive)
-    'dy',                # 5: Meridional relative coordinate (km, north-positive)
+    'r_norm',            # 3: Normalized distance from grid center (dimensionless)
+    'dx_norm',           # 4: Normalized zonal coordinate, in [-1, 1]
+    'dy_norm',           # 5: Normalized meridional coordinate, in [-1, 1]
     'u_move',            # 6: Storm translation zonal velocity (km/h)
     'v_move',            # 7: Storm translation meridional velocity (km/h)
     'dem',               # 8: DEM terrain elevation (m)
-    'dh_dx',             # 9: Terrain gradient d(elev)/dx
-    'dh_dy',             # 10: Terrain gradient d(elev)/dy
+    'dh_dx',             # 9: Terrain gradient d(elev)/dx (m/km)
+    'dh_dy',             # 10: Terrain gradient d(elev)/dy (m/km)
     'land_mask',         # 11: Land/ocean mask (0=ocean, 1=land)
 ]
 PRECIP_CHANNEL_IDX = 0
+
+# Physical units of the terrain gradient channels (dh_dx, dh_dy).
+TERRAIN_GRADIENT_UNITS = "m/km"
 
 # --- HDF5 schema v2 constants ---
 SCHEMA_VERSION = "2.0"
@@ -97,7 +100,7 @@ TERRAIN_CHANNEL_NAMES = [
 
 # Static grid channels are NOT stored — they are reconstructed on-the-fly by the
 # dataset from grid geometry (they depend only on grid size, not on the sample).
-STATIC_GRID_CHANNELS = ['distance_center', 'dx', 'dy']
+STATIC_GRID_CHANNELS = ['r_norm', 'dx_norm', 'dy_norm']
 
 # Note on physics semantics:
 #   u_move / v_move (channels 6, 7) are STORM TRANSLATION velocities, NOT

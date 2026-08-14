@@ -41,13 +41,17 @@ from ..config import (
 
 
 def static_grid_channels(grid_size: int):
-    """Return (distance_center, dx, dy), each [grid_size, grid_size]."""
+    """Return (r_norm, dx_norm, dy_norm), each [grid_size, grid_size].
+
+    dx_norm / dy_norm are normalized to [-1, 1]; r_norm is their Euclidean
+    norm (dimensionless). These are NOT distances in km.
+    """
     y, x = np.meshgrid(np.arange(grid_size), np.arange(grid_size), indexing="ij")
     c = (grid_size - 1) / 2.0
-    dx = (x - c).astype("float32")
-    dy = (y - c).astype("float32")
-    distance_center = np.sqrt(dx ** 2 + dy ** 2).astype("float32")
-    return distance_center, dx, dy
+    dx_norm = ((x - c) / c).astype("float32")
+    dy_norm = ((y - c) / c).astype("float32")
+    r_norm = np.sqrt(dx_norm ** 2 + dy_norm ** 2).astype("float32")
+    return r_norm, dx_norm, dy_norm
 
 
 class TyphoonDataset(Dataset):
@@ -217,7 +221,7 @@ class TyphoonDataset(Dataset):
     def _reconstruct_input(self, precip_input, track, terrain) -> torch.Tensor:
         """Reconstruct the canonical 12-channel input [11, 12, H, W]."""
         K, H, W = precip_input.shape
-        distance_center, dx, dy = static_grid_channels(H)
+        r_norm, dx_norm, dy_norm = static_grid_channels(H)
 
         # Track feature indices (canonical order, see src.config.TRACK_FEATURE_NAMES).
         wind_idx = TRACK_FEATURE_NAMES.index("center_wind_speed")
@@ -229,9 +233,9 @@ class TyphoonDataset(Dataset):
         X[:, 0] = torch.tensor(precip_input, dtype=torch.float32)
         X[:, 1] = torch.tensor(track[:, wind_idx], dtype=torch.float32)[:, None, None]
         X[:, 2] = torch.tensor(track[:, pres_idx], dtype=torch.float32)[:, None, None]
-        X[:, 3] = torch.tensor(distance_center, dtype=torch.float32)[None]
-        X[:, 4] = torch.tensor(dx, dtype=torch.float32)[None]
-        X[:, 5] = torch.tensor(dy, dtype=torch.float32)[None]
+        X[:, 3] = torch.tensor(r_norm, dtype=torch.float32)[None]
+        X[:, 4] = torch.tensor(dx_norm, dtype=torch.float32)[None]
+        X[:, 5] = torch.tensor(dy_norm, dtype=torch.float32)[None]
         X[:, 6] = torch.tensor(track[:, u_idx], dtype=torch.float32)[:, None, None]
         X[:, 7] = torch.tensor(track[:, v_idx], dtype=torch.float32)[:, None, None]
         X[:, 8] = torch.tensor(terrain[0], dtype=torch.float32)[None]

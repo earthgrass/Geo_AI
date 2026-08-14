@@ -1,35 +1,18 @@
-"""Build the schema-v2 paper dataset with a FIXED ANCHOR GRID (no oracle info).
+"""Build the schema-v2 paper dataset with CAUSAL track reconstruction.
 
-Key corrections over the v1 builder:
+This builder enforces a forecast-realistic, leakage-free data pipeline:
 
-1. Fixed anchor grid (P0):
-   Every sample uses ONE 128x128 geographic grid anchored at the LAST INPUT
-   timestep's typhoon center. All 11 input frames AND the target frame are
-   cropped onto this same grid. The target never uses its own future center,
-   so no future-track oracle information leaks into the prediction.
-
-2. DEM aligned to GPM (P0):
-   DEM is reprojected/resampled with rasterio onto exactly the GPM anchor grid
-   (same CRS / bounds / transform / size). Terrain gradients are computed AFTER
-   resampling. No assumption that one DEM pixel == 10 km.
-
-3. Missing-value policy (P0):
-   Only INPUT precipitation frames may be temporally imputed. The TARGET is
-   NEVER imputed — a missing target drops the sample. An input-imputation mask
-   and GPM match offset are recorded per sample.
-
-4. Streaming writes (P0):
-   Samples are buffered and flushed incrementally into extendable HDF5
-   datasets; the full dataset is never held in RAM.
-
-HDF5 schema v2:
-    /precip/input   [N, 11, H, W]   float32
-    /precip/target  [N, 1,  H, W]   float32
-    /terrain        [N, 4,  H, W]   float32  (dem, dh_dx, dh_dy, land_mask)
-    /track          [N, 11, 6]      float32  (lat, lon, wind, pressure, u_move, v_move)
-    /meta/{typhoon_id, year, start_time, anchor_time, target_time,
-           anchor_lat, anchor_lon, grid_transform, input_imputed_mask,
-           gpm_match_offset}
+1. Fixed anchor grid (no future-track oracle for the target crop).
+2. Causal / as-of-anchor track features (P0):
+   Track/intensity features at anchor time t depend ONLY on CMA best-track
+   fixes with timestamp <= t. No full-event spline. Positions after the latest
+   available fix use a constant-velocity estimate; wind/pressure use
+   persistence. Future CMA fixes can never alter an earlier sample.
+3. Physical terrain-gradient units (P0): dh_dx / dh_dy in m/km, computed from
+   the anchor-grid geotransform + anchor latitude (no 10-km-pixel assumption).
+4. GPM actual-time / forecast-lead audit (P0): lookup returns signed offsets;
+   the actual anchor and target GPM times are stored so the validator can report
+   the true forecast lead.
 
 Run from repo root:
     python scripts/build_paper_dataset.py \
@@ -52,7 +35,6 @@ import h5py
 import rasterio
 from rasterio.windows import Window
 from rasterio.warp import reproject, Resampling
-from scipy.interpolate import CubicSpline
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -63,21 +45,24 @@ from src.config import (  # noqa: E402
     CHANNEL_NAMES,
     TRACK_FEATURE_NAMES,
     TERRAIN_CHANNEL_NAMES,
+    TERRAIN_GRADIENT_UNITS,
     SCHEMA_VERSION,
     GRID_SIZE,
 )
 
-SEQ_LEN = 12          # total frames per sample (11 input + 1 target)
+# Schema is FIXED for v2 (option A: seq-len is not configurable).
+SEQ_LEN = 12
 INPUT_SEQ_LEN = 11
 N_TRACK = len(TRACK_FEATURE_NAMES)   # 6
 PRECIP_UNITS = "mm/h"
+DT_H = 0.5                            # hours per frame
 
 _KM_PER_DEG_LAT = 111.19
 _TIF_TIME_RE = re.compile(r"(\d{8}-S\d{6})")
 
 
 # ---------------------------------------------------------------------------
-# CMA best-track parsing + interpolation
+# CMA parsing
 # ---------------------------------------------------------------------------
 
 def parse_best_track(txt_path: str) -> pd.DataFrame:
@@ -95,7 +80,6 @@ def parse_best_track(txt_path: str) -> pd.DataFrame:
         if current_id is None:
             continue
         try:
-            time_str = parts[0]
             lat = float(parts[2]) / 10.0
             lon = float(parts[3]) / 10.0
             pres = float(parts[4])
@@ -104,47 +88,90 @@ def parse_best_track(txt_path: str) -> pd.DataFrame:
             continue
         rows.append({
             "Typhoon_ID": str(current_id).zfill(4),
-            "Time": pd.to_datetime(time_str, format="%Y%m%d%H"),
+            "Time": pd.to_datetime(parts[0], format="%Y%m%d%H"),
             "Lat": lat, "Lon": lon, "Pressure": pres, "Wind_Speed": wind,
         })
     return pd.DataFrame(rows)
 
 
-def interpolate_track(group: pd.DataFrame) -> pd.DataFrame:
-    group = group.sort_values("Time").reset_index(drop=True)
-    if len(group) < 3:
-        return pd.DataFrame()
+# ---------------------------------------------------------------------------
+# Causal / as-of-anchor track reconstruction (P0)
+# ---------------------------------------------------------------------------
 
-    start = group["Time"].iloc[0]
-    hours = (group["Time"] - start).dt.total_seconds().to_numpy() / 3600.0
-    new_hours = np.arange(0.0, hours[-1] + 0.5, 0.5)
-    new_times = start + pd.to_timedelta(new_hours, unit="h")
+def _linear_extrapolate(fix_ts, fix_vals, t):
+    """Linear interp within bracket; constant-velocity extrapolation beyond ends."""
+    if t <= fix_ts[0]:
+        if len(fix_ts) >= 2:
+            slope = (fix_vals[1] - fix_vals[0]) / (fix_ts[1] - fix_ts[0])
+            return fix_vals[0] + slope * (t - fix_ts[0])
+        return fix_vals[0]
+    if t >= fix_ts[-1]:
+        if len(fix_ts) >= 2:
+            slope = (fix_vals[-1] - fix_vals[-2]) / (fix_ts[-1] - fix_ts[-2])
+            return fix_vals[-1] + slope * (t - fix_ts[-1])
+        return fix_vals[-1]
+    return float(np.interp(t, fix_ts, fix_vals))
 
-    cs = {col: CubicSpline(hours, group[col].to_numpy())
-          for col in ("Lat", "Lon", "Pressure", "Wind_Speed")}
 
-    out = pd.DataFrame({
-        "Time": new_times,
-        "Lat": cs["Lat"](new_hours),
-        "Lon": cs["Lon"](new_hours),
-        "Pressure": cs["Pressure"](new_hours),
-        "Wind_Speed": np.clip(cs["Wind_Speed"](new_hours), a_min=0.0, a_max=None),
-    })
+def _persist(fix_ts, fix_vals, t):
+    """Interp within bracket; persistence beyond the last fix (wind/pressure)."""
+    if t <= fix_ts[0]:
+        return fix_vals[0]
+    if t >= fix_ts[-1]:
+        return fix_vals[-1]
+    return float(np.interp(t, fix_ts, fix_vals))
 
-    dlat = np.diff(out["Lat"].to_numpy(), prepend=out["Lat"].iloc[0])
-    dlon = np.diff(out["Lon"].to_numpy(), prepend=out["Lon"].iloc[0])
-    dt_h = 0.5
-    out["v_move"] = dlat * _KM_PER_DEG_LAT / dt_h
-    out["u_move"] = dlon * _KM_PER_DEG_LAT * np.cos(np.radians(out["Lat"])) / dt_h
-    return out
+
+def causal_track_at(raw: pd.DataFrame, anchor_time: pd.Timestamp):
+    """Reconstruct the 11 input frames' track features causally at anchor_time.
+
+    Uses ONLY CMA fixes with Time <= anchor_time. Returns:
+        (track [11,6], latest_fix_time, cma_fix_age_sec)
+    where track columns follow TRACK_FEATURE_NAMES
+    [lat, lon, center_wind_speed, center_pressure, u_move, v_move].
+    Returns None if fewer than 2 available fixes.
+    """
+    avail = raw[raw["Time"] <= anchor_time].sort_values("Time")
+    if len(avail) < 2:
+        return None
+
+    fix_ts = avail["Time"].astype("int64").to_numpy() // 10**9
+    fix_lat = avail["Lat"].to_numpy()
+    fix_lon = avail["Lon"].to_numpy()
+    fix_wind = avail["Wind_Speed"].to_numpy()
+    fix_pres = avail["Pressure"].to_numpy()
+
+    # n_input+1 times: anchor - INPUT_SEQ_LEN*DT_H ... anchor.
+    anchor_sec = anchor_time.timestamp()
+    offsets = -np.arange(INPUT_SEQ_LEN, -1, -1) * DT_H * 3600.0
+    times = anchor_sec + offsets
+
+    lat = np.array([_linear_extrapolate(fix_ts, fix_lat, t) for t in times])
+    lon = np.array([_linear_extrapolate(fix_ts, fix_lon, t) for t in times])
+    wind = np.array([_persist(fix_ts, fix_wind, t) for t in times])
+    pres = np.array([_persist(fix_ts, fix_pres, t) for t in times])
+
+    # Translation velocities from causal positions (forward differences).
+    dlon = np.diff(lon)   # per DT_H hours
+    dlat = np.diff(lat)
+    cos_lat = np.cos(np.radians(lat[1:]))
+    u_move = dlon * _KM_PER_DEG_LAT * cos_lat / DT_H
+    v_move = dlat * _KM_PER_DEG_LAT / DT_H
+
+    track = np.stack([
+        lat[1:], lon[1:], wind[1:], pres[1:], u_move, v_move,
+    ], axis=1).astype("float32")   # [11, 6]
+
+    latest_fix_time = avail["Time"].iloc[-1]
+    cma_fix_age = (anchor_time - latest_fix_time).total_seconds()
+    return track, latest_fix_time, float(cma_fix_age)
 
 
 # ---------------------------------------------------------------------------
-# GPM index + lookup (pre-indexed, exact-first with nearest fallback)
+# GPM index + lookup (signed offset, actual timestamp)
 # ---------------------------------------------------------------------------
 
 def build_tif_index(tif_dir: str) -> dict:
-    """Return {typhoon_id: {datetime: tif_path}}."""
     index: dict = {}
     for tif_path in Path(tif_dir).rglob("*.tif"):
         m = _TIF_TIME_RE.search(tif_path.name)
@@ -156,35 +183,34 @@ def build_tif_index(tif_dir: str) -> dict:
     return index
 
 
-def lookup_gpm(index: dict, typhoon_id: str, time: datetime, tolerance_sec: int):
-    """Exact-first GPM lookup; nearest fallback within tolerance.
+def lookup_gpm(index, typhoon_id, time, tolerance_sec):
+    """Return (path, actual_timestamp, signed_offset_seconds).
 
-    Returns (path, offset_seconds). offset_seconds == 0 for an exact match,
-    >0 for a nearest match, or None if no frame within tolerance.
+    signed_offset = actual_time - requested_time (negative if GPM leads).
+    Returns (None, None, None) if no frame within tolerance.
     """
     frames = index.get(typhoon_id, {})
     if not frames:
-        return None, None
+        return None, None, None
     if time in frames:
-        return frames[time], 0.0
+        return frames[time], time, 0.0
 
-    best_ts, best_dt = None, None
+    best_ts, best_adt = None, None
     for ts in frames:
-        dt = abs((ts - time).total_seconds())
-        if dt <= tolerance_sec and (best_dt is None or dt < best_dt):
-            best_dt, best_ts = dt, ts
+        adt = abs((ts - time).total_seconds())
+        if adt <= tolerance_sec and (best_adt is None or adt < best_adt):
+            best_adt, best_ts = adt, ts
     if best_ts is None:
-        return None, None
-    return frames[best_ts], float(best_dt)
+        return None, None, None
+    return frames[best_ts], best_ts, (best_ts - time).total_seconds()
 
 
 # ---------------------------------------------------------------------------
-# Anchor grid + DEM resampling (geospatial alignment)
+# Anchor grid + DEM (physical terrain-gradient units)
 # ---------------------------------------------------------------------------
 
-def compute_anchor_grid(gpm_transform, gpm_crs, anchor_lat: float, anchor_lon: float,
-                        grid_size: int = GRID_SIZE):
-    """Return the fixed anchor window + its transform, centered on the anchor."""
+def compute_anchor_grid(gpm_transform, gpm_crs, anchor_lat, anchor_lon,
+                        grid_size=GRID_SIZE):
     col, row = ~gpm_transform * (anchor_lon, anchor_lat)
     col, row = int(np.round(col)), int(np.round(row))
     window = Window(col - grid_size // 2, row - grid_size // 2, grid_size, grid_size)
@@ -192,7 +218,7 @@ def compute_anchor_grid(gpm_transform, gpm_crs, anchor_lat: float, anchor_lon: f
     return window, win_transform, gpm_crs
 
 
-def read_precip_window(tif_path: str, window: Window) -> np.ndarray | None:
+def read_precip_window(tif_path, window):
     try:
         with rasterio.open(tif_path) as src:
             crop = src.read(1, window=window, boundless=True, fill_value=0.0)
@@ -203,9 +229,7 @@ def read_precip_window(tif_path: str, window: Window) -> np.ndarray | None:
     return crop.astype("float32")
 
 
-def resample_dem_to_grid(dem_path: str, gpm_crs, win_transform,
-                         grid_size: int = GRID_SIZE) -> np.ndarray | None:
-    """Resample DEM onto exactly the GPM anchor grid (CRS/bounds/transform/size)."""
+def resample_dem_to_grid(dem_path, gpm_crs, win_transform, grid_size=GRID_SIZE):
     if not Path(dem_path).exists():
         return None
     dest = np.zeros((grid_size, grid_size), dtype="float32")
@@ -225,64 +249,52 @@ def resample_dem_to_grid(dem_path: str, gpm_crs, win_transform,
     return dest
 
 
-def terrain_from_dem(dem: np.ndarray) -> tuple:
+def terrain_from_dem(dem, win_transform, anchor_lat):
+    """Terrain channels with PHYSICAL gradient units (m/km)."""
     dem = np.clip(dem, 0.0, None).astype("float32")
     land_mask = (dem > 0.0).astype("float32")
-    dh_dy, dh_dx = np.gradient(dem)
+
+    pixel_deg_x = abs(float(win_transform.a))
+    pixel_deg_y = abs(float(win_transform.e))
+    km_per_deg_lon = _KM_PER_DEG_LAT * np.cos(np.radians(anchor_lat))
+    dx_km = pixel_deg_x * km_per_deg_lon   # zonal km per pixel
+    dy_km = pixel_deg_y * _KM_PER_DEG_LAT  # meridional km per pixel
+
+    dh_dy, dh_dx = np.gradient(dem, dy_km, dx_km)  # m/km
     return dem, dh_dx.astype("float32"), dh_dy.astype("float32"), land_mask
 
 
 # ---------------------------------------------------------------------------
-# Static grid channels (constant, pixel units)
-# ---------------------------------------------------------------------------
-
-def static_grid_channels(grid_size: int = GRID_SIZE):
-    """Return distance_center, dx, dy, each [H, W] (explicitly broadcast)."""
-    y, x = np.meshgrid(np.arange(grid_size), np.arange(grid_size), indexing="ij")
-    cx = (grid_size - 1) / 2.0
-    dx = (x - cx).astype("float32")           # [H, W]
-    dy = (y - cx).astype("float32")           # [H, W]
-    distance_center = np.sqrt(dx ** 2 + dy ** 2).astype("float32")  # [H, W]
-    assert dx.shape == (grid_size, grid_size)
-    assert dy.shape == (grid_size, grid_size)
-    assert distance_center.shape == (grid_size, grid_size)
-    return distance_center, dx, dy
-
-
-# ---------------------------------------------------------------------------
-# Streaming HDF5 writer
+# Streaming HDF5 writer (schema v2)
 # ---------------------------------------------------------------------------
 
 class StreamingH5Writer:
-    """Buffered, incremental HDF5 writer. Never holds the full dataset in RAM."""
-
-    def __init__(self, out_path: str, grid_size: int, buffer_size: int = 256):
+    def __init__(self, out_path, grid_size, buffer_size=256):
         self.f = h5py.File(out_path, "w")
         self.buffer_size = buffer_size
         self._buffer: list = []
         H = W = grid_size
 
         self._mk("precip/input", (0, INPUT_SEQ_LEN, H, W), (None, INPUT_SEQ_LEN, H, W),
-                 "float32", chunks=(1, INPUT_SEQ_LEN, H, W))
-        self._mk("precip/target", (0, 1, H, W), (None, 1, H, W), "float32",
-                 chunks=(1, 1, H, W))
-        self._mk("terrain", (0, 4, H, W), (None, 4, H, W), "float32", chunks=(1, 4, H, W))
+                 "float32", (1, INPUT_SEQ_LEN, H, W))
+        self._mk("precip/target", (0, 1, H, W), (None, 1, H, W), "float32", (1, 1, H, W))
+        self._mk("terrain", (0, 4, H, W), (None, 4, H, W), "float32", (1, 4, H, W))
         self._mk("track", (0, INPUT_SEQ_LEN, N_TRACK), (None, INPUT_SEQ_LEN, N_TRACK), "float32")
 
-        for name in ("typhoon_id", "year", "start_time", "anchor_time", "target_time"):
+        for name in ("typhoon_id", "year", "start_time", "anchor_time", "target_time",
+                     "latest_cma_fix_time", "actual_anchor_gpm_time", "actual_target_gpm_time"):
             self._mk(f"meta/{name}", (0,), (None,), "int64")
-        for name in ("anchor_lat", "anchor_lon"):
+        for name in ("anchor_lat", "anchor_lon", "cma_fix_age_sec", "target_gpm_match_offset"):
             self._mk(f"meta/{name}", (0,), (None,), "float32")
         self._mk("meta/grid_transform", (0, 6), (None, 6), "float64")
         self._mk("meta/input_imputed_mask", (0, INPUT_SEQ_LEN), (None, INPUT_SEQ_LEN), "uint8")
-        self._mk("meta/gpm_match_offset", (0, INPUT_SEQ_LEN), (None, INPUT_SEQ_LEN), "float32")
+        self._mk("meta/input_gpm_match_offset", (0, INPUT_SEQ_LEN), (None, INPUT_SEQ_LEN), "float32")
 
-    def _mk(self, name, shape, maxshape, dtype, chunks=True):
-        kwargs = {"compression": "gzip"} if chunks else {}
-        if chunks is True:
-            chunks = (1,) + shape[1:]
-        if chunks:
+    def _mk(self, name, shape, maxshape, dtype, chunks=None):
+        kwargs = {}
+        if chunks is not None:
             kwargs["chunks"] = chunks
+            kwargs["compression"] = "gzip"
         self.f.create_dataset(name, shape=shape, maxshape=maxshape, dtype=dtype, **kwargs)
 
     def add(self, sample: dict) -> None:
@@ -294,26 +306,26 @@ class StreamingH5Writer:
         if not self._buffer:
             return
         n = len(self._buffer)
-        keys = self._buffer[0].keys()
-        for key in keys:
+        for key in self._buffer[0].keys():
             arr = np.stack([s[key] for s in self._buffer], axis=0)
             ds = self.f[key]
             ds.resize(ds.shape[0] + n, axis=0)
             ds[-n:] = arr
         self._buffer = []
 
-    def close(self, created_by: str = "scripts/build_paper_dataset.py") -> int:
+    def close(self) -> int:
         self._flush()
         n = self.f["precip/input"].shape[0]
         self.f.attrs["schema_version"] = SCHEMA_VERSION
         self.f.attrs["channel_names"] = CHANNEL_NAMES
         self.f.attrs["track_feature_names"] = TRACK_FEATURE_NAMES
         self.f.attrs["terrain_channel_names"] = TERRAIN_CHANNEL_NAMES
+        self.f.attrs["terrain_gradient_units"] = TERRAIN_GRADIENT_UNITS
         self.f.attrs["seq_len"] = SEQ_LEN
         self.f.attrs["input_seq_len"] = INPUT_SEQ_LEN
         self.f.attrs["grid_size"] = GRID_SIZE
         self.f.attrs["precipitation_units"] = PRECIP_UNITS
-        self.f.attrs["created_by"] = created_by
+        self.f.attrs["created_by"] = "scripts/build_paper_dataset.py"
         self.f.close()
         return n
 
@@ -323,30 +335,24 @@ class StreamingH5Writer:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build schema-v2 paper dataset.")
+    parser = argparse.ArgumentParser(description="Build causal schema-v2 paper dataset.")
     parser.add_argument("--cma-dir", default="CMABSTdata")
     parser.add_argument("--tif-dir", default="TIFdata")
     parser.add_argument("--dem", default="Global_DEM.tif")
     parser.add_argument("--out", default="ConvLSTM_Dataset_128.h5")
-    parser.add_argument("--seq-len", type=int, default=SEQ_LEN)
-    parser.add_argument("--max-missing", type=int, default=2,
-                        help="Max imputable INPUT frames per sample")
-    parser.add_argument("--match-tolerance-sec", type=int, default=900,
-                        help="GPM nearest-match tolerance (default 15 min)")
+    parser.add_argument("--max-missing", type=int, default=2)
+    parser.add_argument("--match-tolerance-sec", type=int, default=900)
     parser.add_argument("--buffer-size", type=int, default=256)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     all_tracks = [parse_best_track(str(p)) for p in sorted(Path(args.cma_dir).glob("*.txt"))]
     cma = pd.concat(all_tracks, ignore_index=True) if all_tracks else pd.DataFrame()
-
     if cma.empty:
-        raise RuntimeError(f"No CMA best-track files found in {args.cma_dir}")
+        raise RuntimeError(f"No CMA files in {args.cma_dir}")
 
     tif_index = build_tif_index(args.tif_dir)
-    distance_center, dx, dy = static_grid_channels()
 
-    # Reference GPM grid (CRS + transform) — read from the first available TIF.
     ref_crs, ref_transform = None, None
     for tid_frames in tif_index.values():
         for p in tid_frames.values():
@@ -356,63 +362,75 @@ def main() -> None:
         if ref_transform is not None:
             break
     if ref_transform is None:
-        raise RuntimeError("No GPM TIF files found to establish the reference grid.")
+        raise RuntimeError("No GPM TIFs found to establish the reference grid.")
 
     n_samples = 0
-    n_dropped_target = 0
+    n_dropped = 0
     writer = None if args.dry_run else StreamingH5Writer(args.out, GRID_SIZE, args.buffer_size)
 
-    for typhoon_id, group in cma.groupby("Typhoon_ID"):
-        interp = interpolate_track(group)
-        if interp.empty or len(interp) < args.seq_len:
+    for typhoon_id, raw in cma.groupby("Typhoon_ID"):
+        raw = raw.sort_values("Time").reset_index(drop=True)
+        if len(raw) < 2:
             continue
 
-        for i in range(0, len(interp) - args.seq_len + 1):
-            window_rows = interp.iloc[i:i + args.seq_len]
-            anchor = window_rows.iloc[INPUT_SEQ_LEN - 1]   # last INPUT frame
-            anchor_lat, anchor_lon = float(anchor["Lat"]), float(anchor["Lon"])
-            anchor_time = anchor["Time"]
+        grid = pd.date_range(
+            raw["Time"].min().floor("30min"),
+            raw["Time"].max().ceil("30min"),
+            freq="30min",
+        )
 
-            # ONE fixed grid centered on the anchor.
+        for i in range(INPUT_SEQ_LEN, len(grid)):
+            anchor_time = grid[i]
+            frame_times = grid[i - INPUT_SEQ_LEN:i + 1]   # 11 input + 1 target
+
+            # Causal track (P0): only fixes <= anchor_time.
+            result = causal_track_at(raw, anchor_time)
+            if result is None:
+                continue
+            track, latest_fix_time, cma_fix_age = result
+
+            anchor = pd.Timestamp(anchor_time)
+            anchor_lat = float(track[-1, 0])
+            anchor_lon = float(track[-1, 1])
+
             window, win_transform, grid_crs = compute_anchor_grid(
                 ref_transform, ref_crs, anchor_lat, anchor_lon
             )
-
-            # DEM resampled onto this anchor grid (once per sample).
             dem = resample_dem_to_grid(args.dem, grid_crs, win_transform)
             if dem is None:
-                n_dropped_target += 1
+                n_dropped += 1
                 continue
-            dem, dh_dx, dh_dy, land_mask = terrain_from_dem(dem)
-            terrain = np.stack([dem, dh_dx, dh_dy, land_mask], axis=0)  # [4,H,W]
+            dem, dh_dx, dh_dy, land_mask = terrain_from_dem(dem, win_transform, anchor_lat)
+            terrain = np.stack([dem, dh_dx, dh_dy, land_mask], axis=0)
 
-            # Assemble precip for all 12 frames on the SAME anchor grid.
-            precip = []          # [12,H,W] or None entries
-            match_offsets = []   # per-frame offset (input only, target offset tracked separately)
-            paths_used = set()
+            # Precip for all 12 frames on the same anchor grid.
+            precip = []
+            input_offsets = np.full(INPUT_SEQ_LEN, np.nan, dtype="float32")
+            target_offset = np.nan
+            actual_anchor_gpm = None
+            actual_target_gpm = None
 
-            for t, (_, row) in enumerate(window_rows.iterrows()):
-                tif_path, offset = lookup_gpm(
-                    tif_index, typhoon_id, row["Time"].to_pydatetime(),
-                    args.match_tolerance_sec,
+            for t, ft in enumerate(frame_times):
+                path, actual_ts, offset = lookup_gpm(
+                    tif_index, typhoon_id, ft.to_pydatetime(), args.match_tolerance_sec
                 )
-                is_target = (t == INPUT_SEQ_LEN)  # index 11 is the target
-                if tif_path is None:
+                is_target = (t == INPUT_SEQ_LEN)
+                if path is None:
                     precip.append(None)
+                    continue
+                crop = read_precip_window(path, window)
+                precip.append(crop)
+                if is_target:
+                    target_offset = float(offset) if offset is not None else np.nan
+                    actual_target_gpm = int(actual_ts.timestamp())
                 else:
-                    crop = read_precip_window(tif_path, window)
-                    precip.append(crop)
-                    if tif_path in paths_used:
-                        warnings.warn(
-                            f"GPM frame {tif_path} reused within one sample for "
-                            f"typhoon {typhoon_id}."
-                        )
-                    paths_used.add(tif_path)
-                match_offsets.append(offset if offset is not None else -1.0)
+                    input_offsets[t] = float(offset) if offset is not None else np.nan
+                    if t == INPUT_SEQ_LEN - 1:
+                        actual_anchor_gpm = int(actual_ts.timestamp())
 
-            # TARGET must never be imputed — drop if missing.
+            # Target never imputed -> drop if missing.
             if precip[INPUT_SEQ_LEN] is None:
-                n_dropped_target += 1
+                n_dropped += 1
                 continue
 
             # Impute only INPUT frames.
@@ -437,18 +455,10 @@ def main() -> None:
                 else:
                     continue
                 imputed_mask[t] = 1
-                match_offsets[t] = -1.0
+                input_offsets[t] = np.nan
 
-            precip_input = np.stack(precip[:INPUT_SEQ_LEN], axis=0)      # [11,H,W]
-            precip_target = precip[INPUT_SEQ_LEN][None, ...]              # [1,H,W]
-
-            # Track features for the 11 INPUT frames.
-            inp = window_rows.iloc[:INPUT_SEQ_LEN]
-            track = np.stack([
-                inp["Lat"].to_numpy(), inp["Lon"].to_numpy(),
-                inp["Wind_Speed"].to_numpy(), inp["Pressure"].to_numpy(),
-                inp["u_move"].to_numpy(), inp["v_move"].to_numpy(),
-            ], axis=1).astype("float32")                                  # [11,6]
+            precip_input = np.stack(precip[:INPUT_SEQ_LEN], axis=0)
+            precip_target = precip[INPUT_SEQ_LEN][None, ...]
 
             sample = {
                 "precip/input": precip_input.astype("float32"),
@@ -456,10 +466,12 @@ def main() -> None:
                 "terrain": terrain,
                 "track": track,
                 "meta/typhoon_id": np.int64(typhoon_id),
-                "meta/year": np.int64(window_rows.iloc[-1]["Time"].year),
-                "meta/start_time": np.int64(window_rows.iloc[0]["Time"].timestamp()),
+                "meta/year": np.int64(frame_times[-1].year),
+                "meta/start_time": np.int64(frame_times[0].timestamp()),
                 "meta/anchor_time": np.int64(anchor_time.timestamp()),
-                "meta/target_time": np.int64(window_rows.iloc[-1]["Time"].timestamp()),
+                "meta/target_time": np.int64(frame_times[-1].timestamp()),
+                "meta/latest_cma_fix_time": np.int64(latest_fix_time.timestamp()),
+                "meta/cma_fix_age_sec": np.float32(cma_fix_age),
                 "meta/anchor_lat": np.float32(anchor_lat),
                 "meta/anchor_lon": np.float32(anchor_lon),
                 "meta/grid_transform": np.asarray([
@@ -467,7 +479,10 @@ def main() -> None:
                     win_transform.d, win_transform.e, win_transform.f,
                 ], dtype="float64"),
                 "meta/input_imputed_mask": imputed_mask,
-                "meta/gpm_match_offset": np.asarray(match_offsets[:INPUT_SEQ_LEN], dtype="float32"),
+                "meta/input_gpm_match_offset": input_offsets,
+                "meta/target_gpm_match_offset": np.float32(target_offset),
+                "meta/actual_anchor_gpm_time": np.int64(actual_anchor_gpm or 0),
+                "meta/actual_target_gpm_time": np.int64(actual_target_gpm or 0),
             }
             if args.dry_run:
                 n_samples += 1
@@ -480,7 +495,7 @@ def main() -> None:
         total = writer.close()
 
     print(f"[build] samples written: {total}")
-    print(f"[build] samples dropped (missing target / no DEM): {n_dropped_target}")
+    print(f"[build] samples dropped: {n_dropped}")
 
 
 if __name__ == "__main__":
