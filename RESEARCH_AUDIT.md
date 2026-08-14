@@ -416,4 +416,22 @@ PI-ResConvLSTM
 
 ---
 
+## 附录 B：补遗（2026-08-14，基于 `比赛代码/` 新证据）
+
+> 用户补充了竞赛原始代码 `比赛代码/`（20 个 .py）。以下结论基于源码逐行核对，**强化并细化**了正文，无推翻性更正。详见 `COMPETITION_CODE_AUDIT.md` 与 `CODE_PROVENANCE_MAP.md`。
+
+| # | 更新结论 | 证据 |
+|---|---------|------|
+| R1 | **数据泄漏坐实**：旧训练用 `random_split(dataset, [0.8, 0.2])`，同台风相邻窗口跨 train/val | `step2_2_train_cloud.py:139-141` |
+| R2 | **DEM 从未进模型**：旧训练数据 4 通道 = `[降水, 风场, 气压, 距离]`，无 DEM/地形/海陆；DEM 只在推理引擎读取 | `step2.1_spatial_dataloader.py:111,155-156`；`step2_3` |
+| R3 | **旧训练无任何物理损失**：`nn.MSELoss()` 纯数据拟合；"物理"只在推理阶段作硬编码后处理 | `step2_2_train_cloud.py:149` |
+| R4 | **旧 `.pth` 架构 = SpatialResidualConvLSTM（内部残差 `relu(p_pred+Δp)`）**，与新版时序残差 `P_t+ΔP` 不同，无法直接加载 | `convLSTM_model.py:68` |
+| R5 | **HDF5 可以完整重建**：`CMABSTdata/`+`TIFdata/`+`Global_DEM.tif` 均在仓库；重建脚本 = step2.1 逻辑 + 三处修正（加 DEM 通道 / 写 `/meta` / 移除参数化合成场） | `COMPETITION_CODE_AUDIT.md §8` |
+| R6 | **旧代码无任何可复用 baseline 或气象指标**：仅有单模型 + MSE + step3.2 的粗指标(P_max/S_ext)；新论文的 Persistence/ConvLSTM 等 baseline 与 CSI/POD/FAR 全部需新跑 | 全库无对应实现 |
+| R7 | **旧"物理"全为硬编码经验公式**（`(wind/5)^1.2`、`×0.35`、`×1.2`、`×1.5`），无文献支撑；唯一可保留的是地形抬升**概念**与科氏参数定义 | `step2_3_generate_metrix.py:66-74,146` |
+
+**对正文评级的净影响**：评级维持 **B** 不变；但"可复现性"一项从 3/10 上调至 4/10（数据重建路径已明确），"方法创新"仍为 3/10（旧代码进一步证明无创新点）。
+
+---
+
 *本报告仅依据仓库内实际文件与代码生成；标注为"缺失/未运行"之处，均经文件系统与代码交叉核对。*
