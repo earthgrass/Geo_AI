@@ -7,6 +7,7 @@ data:
   h5_path: "ConvLSTM_Dataset_128.h5"
   seq_len: 11
   precip_channel_idx: 0
+  # Event-level / temporal split (no data leakage)
   train_years: [2014, 2022]
   val_years: [2023, 2023]
   test_years: [2024, 2024]
@@ -17,10 +18,11 @@ data:
 # Model
 model:
   name: "PI-ResConvLSTM"
-  # The existing ConvLSTM_Dataset_128.h5 has 4 channels:
-  # precipitation, wind field, pressure field, distance-to-center.
-  # Set this to 16 only after rebuilding the expanded dataset.
-  input_channels: 4
+  # Paper dataset schema: 12 channels. See src/config.py CHANNEL_NAMES for the
+  # canonical channel order.
+  #   0 precipitation | 1 center_wind_speed | 2 center_pressure | 3 distance_center
+  #   4 dx | 5 dy | 6 u_move | 7 v_move | 8 dem | 9 dh_dx | 10 dh_dy | 11 land_mask
+  input_channels: 12
   precip_channel_idx: 0
   hidden_dims: [64, 128]
   kernel_size: 3
@@ -41,19 +43,25 @@ training:
   use_amp: true
   seed: 42
 
-# Physics Loss
+# Physics-informed Loss
+# L_total = L_rain + lambda_smooth*L_smooth + lambda_extreme*L_extreme (+ lambda_oro*L_oro opt-in)
 physics_loss:
   use_physics_loss: true
-  lambda_nonneg: 0.1
-  lambda_oro: 0.1
   lambda_smooth: 0.01
   lambda_extreme: 0.5
-  # Physical unit (mm/h). Trainer converts it automatically when precipitation
-  # normalization is enabled.
+  lambda_oro: 0.1
   extreme_threshold: 10.0
-  heavy_rain_alpha: 2.0
   orographic_corr_weight: true
-  components: ["rain", "nonneg", "oro", "smooth", "extreme"]
+  # Orographic uplift constraint is OPT-IN and requires REAL environmental wind
+  # channels. Storm translation velocities (u_move/v_move) are NOT valid wind
+  # terms and must never be substituted here.
+  orographic:
+    enabled: false
+    u_channel: null
+    v_channel: null
+    dh_dx_channel: 9
+    dh_dy_channel: 10
+  components: ["rain", "smooth", "extreme"]
 
 # Output
 output:

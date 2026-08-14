@@ -18,7 +18,7 @@
 | `data analysis.py` | step1.4 的重复副本 | 同 | Q1 | DELETE |
 | `convLSTM_model.py` | 旧模型架构 SpatialResidualConvLSTM | — | Q2 | LEGACY |
 | `step2.1_spatial_dataloader.py` | HDF5 张量构建(裁剪/插值/滑窗/通道) | Q1 CSV + TIFdata → ConvLSTM_Dataset_128.h5 | Q2 | **MUST MIGRATE**(需修) |
-| `step2_2_train_cloud.py` | 模型训练 | HDF5 → typhoon_convlstm_best.pth | Q2 | **MUST MIGRATE**(需修) |
+| `step2_2_train_cloud.py` | 模型训练 | HDF5 → typhoon_convlstm_best.pth | Q2 | LEGACY / REFERENCE ONLY |
 | `step2_3_generate_metrix.py` | 物理推演引擎 + DEM 读取 | 轨迹+DEM+权重 → DataPackage.npz | Q2/Q3 | DELETE(仅 RealGeographyEngine 可复用) |
 | `step2_3_rainfall_heatmap.py` | 旧热力图 | npz → png | Q2 | DELETE |
 | `step2_4_rainfall_heatmap.py` | cartopy 降水热力图 | npz → png | Q2 | LEGACY |
@@ -126,6 +126,7 @@ step3.1 (虚拟台风) → step2.3 复用 → step3.2 (指标) → step3.4/step4
 
 ### B. LEGACY ONLY（历史追溯，禁作主实现）
 - `convLSTM_model.py` — 旧架构参照。
+- `step2_2_train_cloud.py` — **旧训练脚本，仅作参考**。含 `random_split` 泄漏、旧 `SpatialResidualConvLSTM` 架构、纯 MSE、无 seed、旧训练语义；其有用的训练思想已被 `src/training/trainer.py` 取代，禁止作为论文主实现。
 - `step2_4_rainfall_heatmap.py` — cartopy 配色/底图参照。
 
 ### C. DELETE FROM PAPER PIPELINE（彻底弃用）

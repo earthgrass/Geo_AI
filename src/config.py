@@ -55,23 +55,30 @@ CMA_CATEGORIES = {
 # --- Default evaluation thresholds (mm/h) ---
 DEFAULT_METRIC_THRESHOLDS = [1.0, 5.0, 10.0, 20.0, 50.0]
 
-# --- Channel layout (for expanded 16-channel input) ---
+# --- Channel layout (canonical 12-channel paper schema) ---
+# This is the SINGLE canonical source of channel names. Do not duplicate a
+# divergent list elsewhere.
 CHANNEL_NAMES = [
-    'precipitation',     # 0: GPM IMERG precipitation (mm/h)
-    'wind_field',        # 1: Parametric wind speed (m/s)
-    'pressure_field',    # 2: Parametric pressure (hPa)
-    'dist_center',       # 3: Distance from typhoon center (km)
-    'dx',                # 4: Zonal offset from center (normalized)
-    'dy',                # 5: Meridional offset (normalized)
-    'u_move',            # 6: Typhoon zonal movement (km/h)
-    'v_move',            # 7: Typhoon meridional movement (km/h)
-    'dem',               # 8: DEM elevation (m)
+    'precipitation',     # 0: GPM IMERG real precipitation (mm/h)
+    'center_wind_speed', # 1: CMA observed max wind speed, broadcast spatially (m/s)
+    'center_pressure',   # 2: CMA observed central pressure, broadcast spatially (hPa)
+    'distance_center',   # 3: Distance from storm center (km)
+    'dx',                # 4: Zonal relative coordinate (km, east-positive)
+    'dy',                # 5: Meridional relative coordinate (km, north-positive)
+    'u_move',            # 6: Storm translation zonal velocity (km/h)
+    'v_move',            # 7: Storm translation meridional velocity (km/h)
+    'dem',               # 8: DEM terrain elevation (m)
     'dh_dx',             # 9: Terrain gradient d(elev)/dx
     'dh_dy',             # 10: Terrain gradient d(elev)/dy
-    'land_mask',         # 11: Land-sea mask (0=ocean, 1=land)
-    'r_norm',            # 12: Normalized distance from center
-    'cos_theta',         # 13: cos(azimuth angle from center)
-    'sin_theta',         # 14: sin(azimuth angle from center)
-    'landfall_flag',     # 15: Landfall status (0=at sea, 1=over land)
+    'land_mask',         # 11: Land/ocean mask (0=ocean, 1=land)
 ]
 PRECIP_CHANNEL_IDX = 0
+
+# Note on physics semantics:
+#   u_move / v_move (channels 6, 7) are STORM TRANSLATION velocities, NOT
+#   environmental atmospheric wind components. They must never be used as the
+#   wind terms of an orographic uplift constraint.
+#
+#   center_wind_speed / center_pressure (channels 1, 2) come from CMA best-track
+#   observations and are broadcast scalar fields. The legacy parametric synthetic
+#   wind/pressure fields are intentionally NOT part of this schema.

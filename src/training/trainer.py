@@ -26,12 +26,6 @@ from ..models.baselines import PlainConvLSTM, ResConvLSTM
 from .physics_loss import PhysicsInformedLoss
 
 
-ORO_U_CHANNEL_IDX = 6
-ORO_V_CHANNEL_IDX = 7
-ORO_DH_DX_CHANNEL_IDX = 9
-ORO_DH_DY_CHANNEL_IDX = 10
-
-
 # ---------------------------------------------------------------------------
 # Helper: set all random seeds
 # ---------------------------------------------------------------------------
@@ -164,6 +158,7 @@ class Trainer:
 
         # Loss function
         use_physics = config.get('use_physics_loss', True)
+        self.oro_config = {'enabled': False}
         if use_physics:
             phy_cfg = config.get('physics_loss', {})
             extreme_threshold = phy_cfg.get('extreme_threshold', 10.0)
@@ -171,15 +166,15 @@ class Trainer:
                 extreme_threshold = extreme_threshold / max(
                     float(config.get('precip_vmax', 100.0)), 1e-8
                 )
+            self.oro_config = dict(phy_cfg.get('orographic', {'enabled': False}))
             self.criterion = PhysicsInformedLoss(
-                lambda_nonneg=phy_cfg.get('lambda_nonneg', 0.1),
-                lambda_oro=phy_cfg.get('lambda_oro', 0.1),
                 lambda_smooth=phy_cfg.get('lambda_smooth', 0.01),
                 lambda_extreme=phy_cfg.get('lambda_extreme', 0.5),
+                lambda_oro=phy_cfg.get('lambda_oro', 0.1),
                 extreme_threshold=extreme_threshold,
-                heavy_rain_alpha=phy_cfg.get('heavy_rain_alpha', 2.0),
                 orographic_corr_weight=phy_cfg.get('orographic_corr_weight', True),
                 components=phy_cfg.get('components', None),
+                oro_config=self.oro_config,
             )
         else:
             self.criterion = nn.MSELoss()
@@ -241,16 +236,43 @@ class Trainer:
         X: torch.Tensor,
         P_prev: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        """Build auxiliary physics tensors consumed by PhysicsInformedLoss."""
+        """Build auxiliary physics tensors consumed by PhysicsInformedLoss.
+
+        The orographic uplift field O = u·dh/dx + v·dh/dy is only computed when
+        the orographic term is explicitly enabled AND its wind channels are
+        configured. Channel indices come from configuration, never hard-coded.
+        """
         aux = {'P_prev': P_prev}
 
-        if X.shape[2] > ORO_DH_DY_CHANNEL_IDX:
-            last = X[:, -1, :, :, :]
-            u = last[:, ORO_U_CHANNEL_IDX:ORO_U_CHANNEL_IDX + 1, :, :]
-            v = last[:, ORO_V_CHANNEL_IDX:ORO_V_CHANNEL_IDX + 1, :, :]
-            dh_dx = last[:, ORO_DH_DX_CHANNEL_IDX:ORO_DH_DX_CHANNEL_IDX + 1, :, :]
-            dh_dy = last[:, ORO_DH_DY_CHANNEL_IDX:ORO_DH_DY_CHANNEL_IDX + 1, :, :]
-            aux['oro_lift'] = u * dh_dx + v * dh_dy
+        oro_cfg = self.oro_config
+        if not oro_cfg.get('enabled', False):
+            return aux
+
+        u_ch = oro_cfg.get('u_channel')
+        v_ch = oro_cfg.get('v_channel')
+        dhx_ch = oro_cfg.get('dh_dx_channel', 9)
+        dhy_ch = oro_cfg.get('dh_dy_channel', 10)
+
+        if u_ch is None or v_ch is None:
+            raise RuntimeError(
+                "Orographic term is enabled but u_channel/v_channel are not "
+                "configured. Environmental wind channels are required."
+            )
+
+        n_channels = X.shape[2]
+        for name, c in (("u_channel", u_ch), ("v_channel", v_ch),
+                        ("dh_dx_channel", dhx_ch), ("dh_dy_channel", dhy_ch)):
+            if c >= n_channels:
+                raise RuntimeError(
+                    f"orographic {name}={c} exceeds input channel count {n_channels}."
+                )
+
+        last = X[:, -1, :, :, :]
+        u = last[:, u_ch:u_ch + 1, :, :]
+        v = last[:, v_ch:v_ch + 1, :, :]
+        dh_dx = last[:, dhx_ch:dhx_ch + 1, :, :]
+        dh_dy = last[:, dhy_ch:dhy_ch + 1, :, :]
+        aux['oro_lift'] = u * dh_dx + v * dh_dy
 
         return aux
 
@@ -540,12 +562,17 @@ def run_benchmark(
             'normalize_precip': kwargs.get('normalize', True),
             'precip_vmax': kwargs.get('precip_vmax', 100.0),
             'physics_loss': {
-                'lambda_nonneg': 0.1,
                 'lambda_oro': 0.1,
                 'lambda_smooth': 0.01,
                 'lambda_extreme': 0.5,
                 'extreme_threshold': 10.0,
-                'heavy_rain_alpha': 2.0,
+                'orographic': {
+                    'enabled': False,
+                    'u_channel': None,
+                    'v_channel': None,
+                    'dh_dx_channel': 9,
+                    'dh_dy_channel': 10,
+                },
             },
             'learning_rate': 1e-4,
             'weight_decay': 1e-4,

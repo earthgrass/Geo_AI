@@ -1,6 +1,6 @@
 # PI-ResConvLSTM Default Training Configuration
 # =============================================
-# Copy this file and modify for your experiment.
+# Kept in sync with the canonical config at configs/default.yaml.
 # Usage: python -m src.training.trainer --config path/to/config.yaml
 
 # ---- Data ----
@@ -8,25 +8,22 @@ data:
   h5_path: "ConvLSTM_Dataset_128.h5"
   seq_len: 11
   precip_channel_idx: 0
-  # Temporal split (no data leakage)
   train_years: [2014, 2022]
   val_years: [2023, 2023]
   test_years: [2024, 2024]
   num_workers: 4
   normalize: true
-  precip_vmax: 100.0   # Max precipitation for normalization (mm/h)
+  precip_vmax: 100.0
 
 # ---- Model ----
 model:
-  name: "PI-ResConvLSTM"   # PI-ResConvLSTM | ResConvLSTM | PlainConvLSTM
-  # The existing ConvLSTM_Dataset_128.h5 has 4 channels:
-  # precipitation, wind field, pressure field, distance-to-center.
-  # Set this to 16 only after rebuilding the expanded dataset.
-  input_channels: 4
+  name: "PI-ResConvLSTM"
+  # Paper dataset schema: 12 channels (see src/config.py CHANNEL_NAMES).
+  input_channels: 12
   precip_channel_idx: 0
   hidden_dims: [64, 128]
   kernel_size: 3
-  use_attention: false      # Enable SE Channel Attention
+  use_attention: false
   attention_reduction: 16
   dropout: 0.0
   use_layer_norm: false
@@ -35,28 +32,29 @@ model:
 training:
   batch_size: 8
   epochs: 100
-  learning_rate: 0.0001     # 1e-4
-  weight_decay: 0.0001      # 1e-4
-  lr_patience: 10           # ReduceLROnPlateau patience
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  lr_patience: 10
   early_stopping_patience: 20
   grad_clip_norm: 1.0
-  use_amp: true             # Automatic Mixed Precision
+  use_amp: true
   seed: 42
 
 # ---- Physics-informed Loss ----
 physics_loss:
   use_physics_loss: true
-  lambda_nonneg: 0.1
-  lambda_oro: 0.1
   lambda_smooth: 0.01
   lambda_extreme: 0.5
-  # Physical unit (mm/h). Trainer converts it automatically when precipitation
-  # normalization is enabled.
+  lambda_oro: 0.1
   extreme_threshold: 10.0
-  heavy_rain_alpha: 2.0      # Weight multiplier for heavy rain
   orographic_corr_weight: true
-  # Components to enable (comment out for ablation):
-  components: ["rain", "nonneg", "oro", "smooth", "extreme"]
+  orographic:
+    enabled: false
+    u_channel: null
+    v_channel: null
+    dh_dx_channel: 9
+    dh_dy_channel: 10
+  components: ["rain", "smooth", "extreme"]
 
 # ---- Output ----
 output:
