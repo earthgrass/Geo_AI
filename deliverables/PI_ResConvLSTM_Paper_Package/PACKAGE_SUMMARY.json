@@ -1,0 +1,8 @@
+{
+  "package": "C:\\Users\\champ\\Desktop\\GeoAI\\deliverables\\PI_ResConvLSTM_Paper_Package",
+  "raw_table_count": 10,
+  "existing_figure_count": 36,
+  "generated_figure_count": 6,
+  "paper_main": "paper/main.tex",
+  "code_root": "code/src"
+}

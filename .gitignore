@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.egg-info/
+dist/
+build/
+
+# Data files (large, not version controlled)
+*.h5
+*.tif
+*.npz
+*.npy
+*.pth
+!requirements.txt
+
+# CSV data files
+*.csv
+
+# Outputs
+outputs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+~$*
+Desktop.ini
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.xdv
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Figures & compiled documents (regenerable, large)
+*.png
+*.pdf
+*.jpg
+*.jpeg
+*.docx
+*.zip
+
+# Archived competition files (excluded from the paper repo)
+archive/
