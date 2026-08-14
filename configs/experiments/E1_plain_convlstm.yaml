@@ -1,0 +1,31 @@
+# Experiment: Plain ConvLSTM (E1)
+# Channels (canonical indices): [0]
+# Loss components: rain
+data:
+  h5_path: "ConvLSTM_Dataset_128.h5"
+  seq_len: 11
+
+model:
+  name: "PlainConvLSTM"
+  input_channel_indices: [0]
+  hidden_dims: [64, 128]
+  kernel_size: 3
+
+training:
+  batch_size: 4
+  epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  lr_patience: 10
+  early_stopping_patience: 10
+  grad_clip_norm: 1.0
+  seed: 42
+
+physics_loss:
+  lambda_extreme: 0.5
+  extreme_threshold: 10.0
+  components: [rain]
+
+output:
+  checkpoint_dir: "outputs/experiments/E1_plain_convlstm/models"
+  log_dir: "outputs/experiments/E1_plain_convlstm/logs"

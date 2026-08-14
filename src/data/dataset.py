@@ -66,6 +66,9 @@ class TyphoonDataset(Dataset):
         meta_csv_path: Optional sidecar CSV (fallback for legacy v1 HDF5).
         strict_metadata: If True (default), raise on missing/ inconsistent
             metadata instead of warning.
+        channel_indices: Optional list of canonical channel indices to include.
+            When None, all 12 channels are returned. When provided, the model
+            input tensor contains ONLY those channels (in the given order).
     """
 
     def __init__(
@@ -77,11 +80,15 @@ class TyphoonDataset(Dataset):
         transform=None,
         meta_csv_path: Optional[str] = None,
         strict_metadata: bool = True,
+        channel_indices: Optional[List[int]] = None,
     ):
         self.h5_path = h5_path
         self.seq_len = seq_len
         self.transform = transform
         self.strict_metadata = strict_metadata
+        self.channel_indices = (
+            None if channel_indices is None else list(channel_indices)
+        )
 
         with h5py.File(self.h5_path, 'r') as f:
             self.is_v2 = "precip" in f
@@ -203,7 +210,7 @@ class TyphoonDataset(Dataset):
                     X, Y, meta = self.transform(X, Y, meta)
                 return X, Y, meta
 
-        X = self._reconstruct_input(precip_input, track, terrain)
+        X = self._reconstruct_input(precip_input, track, terrain, self.channel_indices)
         Y = torch.tensor(precip_target, dtype=torch.float32)
         P_prev = torch.tensor(precip_input[-1], dtype=torch.float32).unsqueeze(0)
 
@@ -218,8 +225,13 @@ class TyphoonDataset(Dataset):
 
         return X, Y, meta
 
-    def _reconstruct_input(self, precip_input, track, terrain) -> torch.Tensor:
-        """Reconstruct the canonical 12-channel input [11, 12, H, W]."""
+    def _reconstruct_input(self, precip_input, track, terrain, channel_indices=None) -> torch.Tensor:
+        """Reconstruct the canonical input [11, C, H, W].
+
+        Builds all 12 canonical channels, then (optionally) selects only the
+        requested `channel_indices` subset, so the model receives EXACTLY the
+        specified channels.
+        """
         K, H, W = precip_input.shape
         r_norm, dx_norm, dy_norm = static_grid_channels(H)
 
@@ -242,6 +254,9 @@ class TyphoonDataset(Dataset):
         X[:, 9] = torch.tensor(terrain[1], dtype=torch.float32)[None]
         X[:, 10] = torch.tensor(terrain[2], dtype=torch.float32)[None]
         X[:, 11] = torch.tensor(terrain[3], dtype=torch.float32)[None]
+
+        if channel_indices is not None:
+            X = X[:, channel_indices, :, :]
         return X
 
     # ------------------------------------------------------------------

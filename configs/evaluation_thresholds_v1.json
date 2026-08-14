@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "fitted_on": "train events only (train-land pixels)",
+  "land_mask": {
+    "land": 1.0,
+    "ocean": 0.0
+  },
+  "high_dem_threshold_m": 585.0,
+  "high_grad_threshold_m_per_km": 16.26
+}

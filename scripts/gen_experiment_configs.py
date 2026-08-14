@@ -1,84 +1,71 @@
-"""Generate the preliminary experiment-manifest YAML configs (Phase 9).
+"""Generate the frozen experiment-matrix YAML configs (E0-E6 + B1).
 
-These are a SPEC for the training phase; channel-subset selection is a
-training-phase TODO (the dataset currently reconstructs all 12 channels).
+Canonical channels:
+    0 precipitation | 1 center_wind_speed | 2 center_pressure | 3 r_norm
+    4 dx_norm | 5 dy_norm | 6 u_move | 7 v_move | 8 dem | 9 dh_dx | 10 dh_dy | 11 land_mask
 """
 
 from pathlib import Path
 
 TEMPLATE = """# Experiment: {name}
-# Input channels: {channels}
+# Channels (canonical indices): {channels}
 # Loss components: {components}
-# NOTE: channel-subset selection is a training-phase TODO; the dataset currently
-# reconstructs all 12 channels. `input_channels` documents the intended subset.
 data:
   h5_path: "ConvLSTM_Dataset_128.h5"
   seq_len: 11
-  precip_channel_idx: 0
-  num_workers: 4
-  normalize: true
-  precip_vmax: 100.0
 
 model:
   name: "{model}"
-  input_channels: {nch}
-  precip_channel_idx: 0
+  input_channel_indices: {channels}
   hidden_dims: [64, 128]
   kernel_size: 3
-  use_attention: false
 
 training:
-  batch_size: 8
+  batch_size: 4
   epochs: 100
   learning_rate: 0.0001
   weight_decay: 0.0001
   lr_patience: 10
-  early_stopping_patience: 20
+  early_stopping_patience: 10
   grad_clip_norm: 1.0
-  use_amp: true
   seed: 42
 
 physics_loss:
-  use_physics_loss: true
-  lambda_smooth: 0.01
   lambda_extreme: 0.5
-  lambda_oro: 0.1
   extreme_threshold: 10.0
-  orographic:
-    enabled: false
-    u_channel: null
-    v_channel: null
-    dh_dx_channel: 9
-    dh_dy_channel: 10
   components: [{components}]
 
 output:
-  checkpoint_dir: "outputs/models/{slug}"
-  log_dir: "outputs/logs/{slug}"
+  checkpoint_dir: "outputs/experiments/{slug}/models"
+  log_dir: "outputs/experiments/{slug}/logs"
 """
 
 EXPS = [
-    ("01_persistence", "Persistence (E0)", "precipitation only", "Persistence", 0, "rain"),
-    ("02_plain_convlstm", "Plain ConvLSTM (E1)", "precipitation only", "PlainConvLSTM", 1, "rain"),
-    ("03_resconvlstm_precip", "ResConvLSTM precip-only (E2)", "precipitation only", "ResConvLSTM", 1, "rain"),
-    ("04_resconvlstm_cma", "ResConvLSTM + CMA (E3)",
-     "precip + center_wind_speed + center_pressure + r_norm + dx_norm + dy_norm + u_move + v_move (8ch)",
-     "ResConvLSTM", 8, "rain"),
-    ("05_resconvlstm_terrain", "Terrain-aware ResConvLSTM (E4)",
-     "all 12 channels (precip + CMA + dem/dh_dx/dh_dy/land_mask)",
-     "ResConvLSTM", 12, "rain"),
-    ("06_resconvlstm_extreme", "Terrain-aware + Extreme Loss (E5)",
-     "all 12 channels", "ResConvLSTM", 12, "rain, extreme"),
+    ("E0_persistence", "Persistence (E0)", "Persistence", [0], ["rain"]),
+    ("E1_plain_convlstm", "Plain ConvLSTM (E1)", "PlainConvLSTM", [0], ["rain"]),
+    ("E2_resconvlstm", "Residual ConvLSTM (E2)", "ResConvLSTM", [0], ["rain"]),
+    ("E3_resconvlstm_cma", "ResConvLSTM + CMA (E3)", "ResConvLSTM",
+     [0, 1, 2, 3, 4, 5, 6, 7], ["rain"]),
+    ("E4_static_terrain", "Static Terrain (E4)", "ResConvLSTM",
+     [0, 1, 2, 3, 4, 5, 6, 7, 8, 11], ["rain"]),
+    ("E5_terrain_geometry", "Terrain Geometry (E5)", "ResConvLSTM",
+     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], ["rain"]),
+    ("E6_terrain_extreme", "Terrain + Extreme Loss (E6)", "ResConvLSTM",
+     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], ["rain", "extreme"]),
+    ("B1_trajgru", "TrajGRU baseline (B1)", "TrajGRU", [0], ["rain"]),
 ]
 
 
 def main():
     out_dir = Path("configs/experiments")
     out_dir.mkdir(parents=True, exist_ok=True)
-    for slug, name, channels, model, nch, comp in EXPS:
+    for slug, name, model, channels, components in EXPS:
         content = TEMPLATE.format(
-            name=name, channels=channels, components=comp,
-            model=model, nch=nch, slug=slug,
+            name=name,
+            model=model,
+            channels=channels,
+            components=", ".join(components),
+            slug=slug,
         )
         (out_dir / f"{slug}.yaml").write_text(content, encoding="utf-8")
         print(f"wrote {slug}.yaml")
