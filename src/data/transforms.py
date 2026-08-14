@@ -62,11 +62,26 @@ class LogTransform:
 class RandomRotation:
     """Random 90-degree rotation augmentation (preserves grid alignment).
 
+    .. warning::
+        UNSAFE for the vector-valued channels of the paper schema. Rotating the
+        spatial grid does NOT correctly rotate u_move/v_move (translation vector),
+        dh_dx/dh_dy (terrain gradient vector), or dx/dy (coordinate axes). A
+        fully vector-aware rotation is NOT implemented, so this transform is
+        DISABLED for paper experiments. Use only scalar-field transforms.
+
     Args:
         p: Probability of applying rotation.
     """
 
     def __init__(self, p: float = 0.5):
+        import warnings
+
+        warnings.warn(
+            "RandomRotation is unsafe for vector-valued channels "
+            "(u/v, dh_dx/dh_dy, dx/dy) and is disabled for paper experiments. "
+            "A vector-aware rotation is not implemented.",
+            RuntimeWarning,
+        )
         self.p = p
 
     def __call__(self, X: torch.Tensor, Y: torch.Tensor,

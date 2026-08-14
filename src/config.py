@@ -74,6 +74,31 @@ CHANNEL_NAMES = [
 ]
 PRECIP_CHANNEL_IDX = 0
 
+# --- HDF5 schema v2 constants ---
+SCHEMA_VERSION = "2.0"
+
+# Track feature names stored in /track [N, 11, F]. This is the canonical order.
+TRACK_FEATURE_NAMES = [
+    'lat',                  # 0: center latitude (deg N)
+    'lon',                  # 1: center longitude (deg E)
+    'center_wind_speed',    # 2: CMA observed max wind speed (m/s)
+    'center_pressure',      # 3: CMA observed central pressure (hPa)
+    'u_move',               # 4: storm translation zonal velocity (km/h)
+    'v_move',               # 5: storm translation meridional velocity (km/h)
+]
+
+# Terrain channels stored in /terrain [N, 4, H, W]. Canonical order.
+TERRAIN_CHANNEL_NAMES = [
+    'dem',       # terrain elevation (m)
+    'dh_dx',     # terrain gradient d(elev)/dx
+    'dh_dy',     # terrain gradient d(elev)/dy
+    'land_mask', # land/ocean mask (0/1)
+]
+
+# Static grid channels are NOT stored — they are reconstructed on-the-fly by the
+# dataset from grid geometry (they depend only on grid size, not on the sample).
+STATIC_GRID_CHANNELS = ['distance_center', 'dx', 'dy']
+
 # Note on physics semantics:
 #   u_move / v_move (channels 6, 7) are STORM TRANSLATION velocities, NOT
 #   environmental atmospheric wind components. They must never be used as the

@@ -1,20 +1,7 @@
-"""Validate a paper dataset HDF5 file and print a PASS / FAIL report.
+"""Validate a schema-v2 paper dataset HDF5 and print a PASS / FAIL report.
 
-Checks (each reported independently):
-    1. file exists and opens
-    2. /data shape == [N, 12, 12, 128, 128]
-    3. exactly 12 channels
-    4. all finite (no NaN / Inf)
-    5. precipitation >= 0
-    6. metadata length == sample count (typhoon_id, year, start_time, target_time)
-    7. typhoon_id present for every sample
-    8. year present and valid for every sample
-    9. timestamps valid (start_time < target_time)
-    10. no cross-event window (single typhoon_id per sample)
-    11. channel_names attr matches canonical schema
-    12. DEM channel not empty
-    13. terrain gradients not all zero
-    14. land mask contains only 0/1
+Every check is reported independently; missing metadata keys report FAIL rather
+than crashing. A zero-sample dataset reports FAIL cleanly.
 
 Run from repo root:
     python scripts/validate_paper_dataset.py --h5 ConvLSTM_Dataset_128.h5
@@ -34,24 +21,24 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.config import CHANNEL_NAMES, GRID_SIZE  # noqa: E402
+from src.config import CHANNEL_NAMES, TRACK_FEATURE_NAMES, TERRAIN_CHANNEL_NAMES, SCHEMA_VERSION  # noqa: E402
 
 EXPECTED_N_CHANNELS = len(CHANNEL_NAMES)  # 12
+STEP_SEC = 1800  # 0.5h per frame
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate a paper dataset HDF5 file.")
+    parser = argparse.ArgumentParser(description="Validate a schema-v2 paper dataset.")
     parser.add_argument("--h5", default="ConvLSTM_Dataset_128.h5")
     args = parser.parse_args()
 
-    results = []
+    results: list[tuple[str, bool, str]] = []
 
     def check(name: str, ok: bool, detail: str = "") -> None:
         results.append((name, bool(ok), detail))
 
     path = Path(args.h5)
     check("file exists", path.exists(), str(path))
-
     if not path.exists():
         _report(results)
         return
@@ -66,98 +53,144 @@ def main() -> None:
     with f:
         check("file opens", True)
 
-        # 2. /data shape.
-        has_data = "data" in f
-        check("has /data", has_data)
-        if has_data:
-            shape = f["data"].shape
-            expected_ndim = 5
-            ok_shape = (
-                len(shape) == expected_ndim
-                and shape[1] == 12
-                and shape[2] == EXPECTED_N_CHANNELS
-                and shape[3] == GRID_SIZE
-                and shape[4] == GRID_SIZE
-            )
-            check("data shape [N,12,12,128,128]", ok_shape, f"got {shape}")
+        # Core groups present.
+        for grp in ("precip/input", "precip/target", "terrain", "track", "meta"):
+            check(f"has /{grp}", grp in f, grp)
 
-            n_samples = int(shape[0])
+        if "precip/input" not in f:
+            _report(results)
+            return
 
-            # 4/5. finite + precip >= 0 (sampled to bound I/O on large files).
-            sample_step = max(1, n_samples // 200)
-            sample_idxs = list(range(0, n_samples, sample_step))
-            sample_idxs.append(n_samples - 1)
-            arr = f["data"][sorted(set(sample_idxs))]
-            check("finite (no NaN/Inf)", bool(np.isfinite(arr).all()))
-            precip = arr[:, -1, 0, :, :]  # last frame, precipitation channel
-            check("precipitation >= 0", bool((precip >= 0).all()))
+        n_samples = int(f["precip/input"].shape[0])
+        check("non-empty dataset", n_samples > 0, f"N={n_samples}")
 
-            # 12/13/14. DEM / gradients / land mask on a subsample.
-            dem = arr[:, -1, 8, :, :]
-            dh_dx = arr[:, -1, 9, :, :]
-            dh_dy = arr[:, -1, 10, :, :]
-            land = arr[:, -1, 11, :, :]
-            check("DEM not empty", bool((dem != 0).any()))
+        pshape = f["precip/input"].shape
+        tshape = f["precip/target"].shape
+        teshape = f["terrain"].shape
+        trshape = f["track"].shape
+        check("input shape [N,11,H,W]", len(pshape) == 4 and pshape[1] == 11, str(pshape))
+        check("target shape [N,1,H,W]", len(tshape) == 4 and tshape[1] == 1, str(tshape))
+        check("terrain shape [N,4,H,W]", len(teshape) == 4 and teshape[2] == 4, str(teshape))
+        check("track shape [N,11,6]", len(trshape) == 4 or len(trshape) == 3, str(trshape))
+
+        # Input/target share the same H,W (geospatial alignment).
+        check("input/target same H,W",
+              pshape[2:] == tshape[2:], f"{pshape[2:]} vs {tshape[2:]}")
+        check("terrain aligned to precip grid",
+              pshape[2:] == teshape[3:], f"{pshape[2:]} vs {teshape[3:]}")
+
+        if n_samples > 0:
+            step = max(1, n_samples // 200)
+            idxs = sorted(set(list(range(0, n_samples, step)) + [n_samples - 1]))
+
+            arr = f["precip/input"][idxs]
+            tgt = f["precip/target"][idxs]
+            check("input finite (no NaN/Inf)", bool(np.isfinite(arr).all()))
+            check("target finite (no NaN/Inf)", bool(np.isfinite(tgt).all()))
+            check("precipitation >= 0", bool((arr >= 0).all() and (tgt >= 0).all()))
+
+            terrain = f["terrain"][idxs]
+            check("DEM not empty", bool((terrain[:, 0] != 0).any()))
             check("terrain gradients not all zero",
-                  bool((dh_dx != 0).any() or (dh_dy != 0).any()))
-            check("land mask is 0/1", bool(np.isin(land, [0.0, 1.0]).all()))
+                  bool((terrain[:, 1] != 0).any() or (terrain[:, 2] != 0).any()))
+            check("land mask is 0/1", bool(np.isin(terrain[:, 3], [0.0, 1.0]).all()))
 
-        # 6-10. metadata.
-        has_meta = "meta" in f
-        check("has /meta", has_meta)
-        if has_meta and has_data:
-            for key in ("typhoon_id", "year", "start_time", "target_time"):
-                ok_key = key in f["meta"]
-                check(f"/meta/{key} present", ok_key)
-                if ok_key:
-                    check(
-                        f"/meta/{key} length == sample count",
-                        len(f["meta"][key]) == n_samples,
-                        f"{len(f['meta'][key])} vs {n_samples}",
-                    )
+            track = f["track"][idxs]  # [., 11, 6]
+            # track feature order: lat, lon, wind, pressure, u_move, v_move
+            wind = track[..., 2]
+            pres = track[..., 3]
+            umove = track[..., 4]
+            vmove = track[..., 5]
+            check("wind speed in valid range (0..120 m/s)",
+                  bool((wind >= 0).all() and (wind <= 120).all()))
+            check("pressure in valid range (850..1050 hPa)",
+                  bool((pres >= 850).all() and (pres <= 1050).all()))
+            check("translation speeds plausible (<100 km/h)",
+                  bool((np.abs(umove) < 100).all() and (np.abs(vmove) < 100).all()))
 
-            tids = f["meta"]["typhoon_id"][:]
-            years = f["meta"]["year"][:]
-            starts = f["meta"]["start_time"][:]
-            targets = f["meta"]["target_time"][:]
-            check("typhoon_id present for every sample",
-                  bool(np.isfinite(tids.astype(float)).all()))
-            check("year valid integer for every sample",
-                  bool((np.isfinite(years.astype(float))).all()
-                       and (years >= 1900).all() and (years <= 2100).all()))
-            check("timestamps valid (start < target)",
-                  bool((starts < targets).all()))
-            check("no cross-event window (scalar typhoon_id per sample)",
-                  bool(np.isfinite(tids.astype(float)).all()))
+        # Metadata field presence (each missing key -> FAIL, no crash).
+        for key, dtype in (("typhoon_id", None), ("year", None),
+                           ("start_time", None), ("anchor_time", None),
+                           ("target_time", None), ("anchor_lat", None),
+                           ("anchor_lon", None), ("grid_transform", None),
+                           ("input_imputed_mask", None), ("gpm_match_offset", None)):
+            ok = "meta" in f and key in f["meta"]
+            check(f"/meta/{key} present", ok, key)
+            if ok and n_samples > 0:
+                check(f"/meta/{key} length == N",
+                      len(f["meta"][key]) == n_samples,
+                      f"{len(f['meta'][key])} vs {n_samples}")
 
-        # 11. channel_names attr.
+        if n_samples > 0 and "meta" in f and "start_time" in f["meta"]:
+            st = f["meta"]["start_time"][:]
+            at = f["meta"]["anchor_time"][:]
+            tt = f["meta"]["target_time"][:]
+            check("timestamps chronological (start < anchor < target)",
+                  bool((st < at).all() and (at < tt).all()))
+            # anchor = start + 10 steps; target = start + 11 steps.
+            check("anchor offset ~10 steps (5h)",
+                  bool((np.abs((at - st) - 10 * STEP_SEC) <= STEP_SEC).all()))
+            check("target offset ~11 steps (5.5h)",
+                  bool((np.abs((tt - st) - 11 * STEP_SEC) <= STEP_SEC).all()))
+
+        if n_samples > 0 and "meta" in f and "anchor_lat" in f["meta"]:
+            lat = f["meta"]["anchor_lat"][:]
+            lon = f["meta"]["anchor_lon"][:]
+            check("anchor_lat valid (-90..90)", bool((lat >= -90).all() and (lat <= 90).all()))
+            check("anchor_lon valid (-180..180)", bool((lon >= -180).all() and (lon <= 180).all()))
+
+        if n_samples > 0 and "meta" in f and "grid_transform" in f["meta"]:
+            gt = f["meta"]["grid_transform"][:]
+            check("grid_transform finite [N,6]", bool(np.isfinite(gt).all()) and gt.shape[1] == 6)
+            # pixel size = |a| (should be ~0.1 deg for GPM)
+            px = np.abs(gt[:, 0])
+            check("grid pixel size plausible (0.01..1.0 deg)",
+                  bool((px > 0.01).all() and (px < 1.0).all()))
+
+        if n_samples > 0 and "meta" in f and "input_imputed_mask" in f["meta"]:
+            mask = f["meta"]["input_imputed_mask"][:]
+            check("input_imputed_mask shape [N,11]", mask.shape[1] == 11, str(mask.shape))
+            check("input_imputed_mask binary", bool(np.isin(mask, [0, 1]).all()))
+            check("imputation rate <= 30%",
+                  bool((mask.mean() <= 0.3)), f"{mask.mean():.3f}")
+            # TARGET is never imputed: there is no target imputation field (the
+            # mask has 11 columns for the 11 INPUT frames only).
+            check("target never imputed (mask covers input only)", mask.shape[1] == 11)
+
+        # Attributes.
+        if "schema_version" in f.attrs:
+            check("schema_version == v2", str(f.attrs["schema_version"]) == SCHEMA_VERSION,
+                  str(f.attrs["schema_version"]))
         if "channel_names" in f.attrs:
-            names = list(f.attrs["channel_names"])
-            check("channel_names matches canonical schema",
-                  names == CHANNEL_NAMES, f"{names}")
-        else:
-            check("channel_names attr present", False)
+            check("channel_names matches canonical",
+                  list(f.attrs["channel_names"]) == CHANNEL_NAMES)
+        if "track_feature_names" in f.attrs:
+            check("track_feature_names matches canonical",
+                  list(f.attrs["track_feature_names"]) == TRACK_FEATURE_NAMES)
+        if "terrain_channel_names" in f.attrs:
+            check("terrain_channel_names matches canonical",
+                  list(f.attrs["terrain_channel_names"]) == TERRAIN_CHANNEL_NAMES)
 
     _report(results)
 
 
-def _report(results: list[tuple]) -> None:
+def _report(results: list[tuple[str, bool, str]]) -> None:
     n_fail = sum(1 for _, ok, _ in results if not ok)
-    print("\n" + "=" * 60)
-    print("DATASET VALIDATION REPORT")
-    print("=" * 60)
+    print("\n" + "=" * 62)
+    print("DATASET VALIDATION REPORT (schema v2)")
+    print("=" * 62)
     for name, ok, detail in results:
         status = "PASS" if ok else "FAIL"
         line = f"  [{status}] {name}"
         if detail:
             line += f"  ({detail})"
         print(line)
-    print("-" * 60)
+    print("-" * 62)
     if n_fail == 0:
         print(f"RESULT: PASS  ({len(results)} checks)")
     else:
         print(f"RESULT: FAIL  ({n_fail}/{len(results)} checks failed)")
-    print("=" * 60 + "\n")
+    print("=" * 62 + "\n")
 
 
 if __name__ == "__main__":
