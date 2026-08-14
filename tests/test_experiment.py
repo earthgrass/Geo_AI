@@ -125,6 +125,50 @@ def test_test_sealing_default_off():
     assert "--allow-test-eval" in src
 
 
+def _load_run_experiment():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "run_experiment", REPO_ROOT / "scripts" / "run_experiment.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_loader_shuffle():
+    from torch.utils.data import RandomSampler, SequentialSampler
+
+    run_exp = _load_run_experiment()
+    stats = {"track_features": {}, "terrain": {}}
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        p = _make_v2_h5(Path(tmp) / "d.h5")
+        _, train_loader = run_exp.make_loader(
+            p, [1, 2], [0], stats, batch_size=2, num_workers=0,
+            shuffle=True, pin_memory=False)
+        _, val_loader = run_exp.make_loader(
+            p, [1, 2], [0], stats, batch_size=2, num_workers=0,
+            shuffle=False, pin_memory=False)
+        assert isinstance(train_loader.sampler, RandomSampler)
+        assert isinstance(val_loader.sampler, SequentialSampler)
+
+
+def test_amp_selection():
+    run_exp = _load_run_experiment()
+    f = run_exp.resolve_use_amp
+    assert f("auto", None, True) is True     # CUDA, no YAML -> on
+    assert f("auto", None, False) is False   # CPU, no YAML -> off
+    assert f("auto", False, True) is False   # YAML False overrides CUDA
+    assert f("auto", True, False) is True    # YAML True overrides CPU
+    assert f("on", None, False) is True      # CLI on
+    assert f("off", True, True) is False     # CLI off
+
+
+def test_config_precedence():
+    run_exp = _load_run_experiment()
+    assert run_exp._resolve(None, 8, 4) == 8     # YAML wins when CLI None
+    assert run_exp._resolve(16, 8, 4) == 16      # CLI wins
+    assert run_exp._resolve(None, None, 4) == 4  # default
+
+
 def test_event_aggregation():
     from src.evaluation.evaluator import _aggregate_by_event
 
@@ -147,6 +191,9 @@ def main():
         ("test_trajgru_forward", test_trajgru_forward),
         ("test_test_sealing_default_off", test_test_sealing_default_off),
         ("test_event_aggregation", test_event_aggregation),
+        ("test_loader_shuffle", test_loader_shuffle),
+        ("test_amp_selection", test_amp_selection),
+        ("test_config_precedence", test_config_precedence),
     ]
     n_fail = 0
     for name, fn in tests:

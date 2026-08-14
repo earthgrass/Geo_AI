@@ -12,7 +12,7 @@ Supports:
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import time
 import os
@@ -193,9 +193,9 @@ class Trainer:
             patience=config.get('lr_patience', 10),
         )
 
-        # AMP
-        self.use_amp = config.get('use_amp', True)
-        self.scaler = GradScaler(enabled=self.use_amp)
+        # AMP (only on CUDA; the scaler is device-specific).
+        self.use_amp = bool(config.get('use_amp', True)) and torch.cuda.is_available()
+        self.scaler = GradScaler('cuda', enabled=self.use_amp)
 
         # Early stopping
         self.patience = config.get('early_stopping_patience', 20)
@@ -292,13 +292,13 @@ class Trainer:
         n_samples = 0
 
         for X, Y, meta in self.train_loader:
-            X = X.to(self.device)
-            Y = Y.to(self.device)
-            P_prev = meta['P_prev'].to(self.device)
+            X = X.to(self.device, non_blocking=self.device.type == 'cuda')
+            Y = Y.to(self.device, non_blocking=self.device.type == 'cuda')
+            P_prev = meta['P_prev'].to(self.device, non_blocking=self.device.type == 'cuda')
 
             self.optimizer.zero_grad()
 
-            with autocast(enabled=self.use_amp):
+            with autocast("cuda", enabled=self.use_amp):
                 P_hat = self._predict_precipitation(X, P_prev)
 
                 # Compute loss
@@ -353,11 +353,11 @@ class Trainer:
         n_samples = 0
 
         for X, Y, meta in self.val_loader:
-            X = X.to(self.device)
-            Y = Y.to(self.device)
-            P_prev = meta['P_prev'].to(self.device)
+            X = X.to(self.device, non_blocking=self.device.type == 'cuda')
+            Y = Y.to(self.device, non_blocking=self.device.type == 'cuda')
+            P_prev = meta['P_prev'].to(self.device, non_blocking=self.device.type == 'cuda')
 
-            with autocast(enabled=self.use_amp):
+            with autocast("cuda", enabled=self.use_amp):
                 P_hat = self._predict_precipitation(X, P_prev)
 
                 if isinstance(self.criterion, PhysicsInformedLoss):

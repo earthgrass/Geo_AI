@@ -3,13 +3,17 @@
 Reads the event-level split (configs/splits_v1.yaml), the frozen normalization
 (configs/normalization_v1.json), and one experiment config (configs/experiments/).
 
+Config precedence (CLI only overrides when EXPLICITLY provided):
+    - batch_size:   CLI --batch-size  >  training.batch_size  >  default 4
+    - epochs:       CLI --epochs      >  training.epochs      >  default 30
+    - num_workers:  CLI --num-workers >  data.num_workers     >  auto (4 GPU / 0 CPU)
+    - use_amp:      CLI --amp on|off  >  training.use_amp     >  auto (CUDA -> on)
+
 Test-set evaluation is REFUSED unless ``--allow-test-eval`` is explicitly passed
-(default False). This enforces the highest-priority research rule: no peeking at
-test performance during model development / selection.
+(default False).
 
 Usage:
-    python scripts/run_experiment.py --config configs/experiments/05_resconvlstm_terrain.yaml \
-        --epochs 100 --out outputs/exp/E5
+    python scripts/run_experiment.py --config configs/experiments/E2_resconvlstm.yaml
 """
 
 from __future__ import annotations
@@ -55,20 +59,42 @@ def make_model(model_name: str, channel_indices, hidden_dims=(64, 128)):
     raise ValueError(f"Unknown model: {model_name}")
 
 
-def make_loaders(h5, ids, channel_indices, stats, batch_size, num_workers):
+def make_loader(h5, ids, channel_indices, stats, batch_size, num_workers,
+                shuffle, pin_memory):
     transform = ChannelNormalize(stats, channel_indices=channel_indices, precip_vmax=100.0)
     ds = TyphoonDataset(h5, typhoon_ids=ids, channel_indices=channel_indices, transform=transform)
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    loader = DataLoader(
+        ds, batch_size=batch_size, shuffle=shuffle,
+        num_workers=num_workers, pin_memory=pin_memory,
+        drop_last=(shuffle is True),
+    )
     return ds, loader
+
+
+def _resolve(args_val, yaml_val, default):
+    return args_val if args_val is not None else (yaml_val if yaml_val is not None else default)
+
+
+def resolve_use_amp(cli_amp, yaml_use_amp, cuda_available):
+    """Resolve AMP enablement: CLI (on/off) > YAML > auto (CUDA availability)."""
+    if cli_amp == "on":
+        return True
+    if cli_amp == "off":
+        return False
+    # "auto": prefer YAML, else CUDA availability.
+    if yaml_use_amp is not None:
+        return bool(yaml_use_amp)
+    return bool(cuda_available)
 
 
 def main():
     p = argparse.ArgumentParser(description="Run a frozen validation-stage experiment.")
     p.add_argument("--config", required=True)
     p.add_argument("--h5", default="ConvLSTM_Dataset_128.h5")
-    p.add_argument("--epochs", type=int, default=30)
-    p.add_argument("--batch-size", type=int, default=4)
-    p.add_argument("--num-workers", type=int, default=0)
+    p.add_argument("--epochs", type=int, default=None)
+    p.add_argument("--batch-size", type=int, default=None)
+    p.add_argument("--num-workers", type=int, default=None)
+    p.add_argument("--amp", choices=["auto", "on", "off"], default="auto")
     p.add_argument("--out", default="outputs/experiments")
     p.add_argument("--allow-test-eval", action="store_true",
                    help="EXPLICITLY unseal test evaluation (research rule: default OFF).")
@@ -79,32 +105,43 @@ def main():
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
     model_cfg = cfg["model"]
     train_cfg = cfg.get("training", {})
+    data_cfg = cfg.get("data", {})
     phy_cfg = cfg.get("physics_loss", {})
     model_name = model_cfg["name"]
     channel_indices = model_cfg["input_channel_indices"]
     seed = train_cfg.get("seed", 42)
 
+    cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if cuda else "cpu")
+
+    # Config precedence: CLI overrides only when explicitly provided.
+    batch_size = _resolve(args.batch_size, train_cfg.get("batch_size"), 4)
+    epochs = _resolve(args.epochs, train_cfg.get("epochs"), 30)
+    num_workers = _resolve(args.num_workers, data_cfg.get("num_workers"), (4 if cuda else 0))
+    use_amp = resolve_use_amp(args.amp, train_cfg.get("use_amp"), cuda)
+    pin_memory = cuda
+
     train_ids, val_ids, test_ids = load_split()
     stats = json.load(open("configs/normalization_v1.json", encoding="utf-8"))
     set_seed(seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[run] model={model_name} channels={channel_indices} device={device} seed={seed}")
+    print(f"[run] model={model_name} channels={channel_indices} device={device} seed={seed} "
+          f"batch={batch_size} epochs={epochs} workers={num_workers} amp={use_amp}")
 
     # ---- E0 Persistence: no training, validation eval only ----
     if model_name == "Persistence":
-        _, val_loader = make_loaders(args.h5, val_ids, channel_indices, stats,
-                                     args.batch_size, args.num_workers)
+        _, val_loader = make_loader(args.h5, val_ids, channel_indices, stats,
+                                    batch_size, num_workers, shuffle=False, pin_memory=pin_memory)
         model = PersistenceBaseline(0)
         res = evaluate_model(model, val_loader, device, channel_indices=channel_indices)
         _write_results(args.out, model_name, res, device, "Persistence (no training)")
-        _seal_check(args, test_ids, channel_indices, stats)
+        _seal_check(args, test_ids, channel_indices, stats, batch_size, num_workers, pin_memory)
         return
 
     # ---- Training experiments ----
-    train_ds, train_loader = make_loaders(args.h5, train_ids, channel_indices, stats,
-                                          args.batch_size, args.num_workers)
-    val_ds, val_loader = make_loaders(args.h5, val_ids, channel_indices, stats,
-                                      args.batch_size, args.num_workers)
+    train_ds, train_loader = make_loader(args.h5, train_ids, channel_indices, stats,
+                                         batch_size, num_workers, shuffle=True, pin_memory=pin_memory)
+    val_ds, val_loader = make_loader(args.h5, val_ids, channel_indices, stats,
+                                     batch_size, num_workers, shuffle=False, pin_memory=pin_memory)
     if args.max_samples > 0:
         train_ds.indices = train_ds.indices[:args.max_samples]
         val_ds.indices = val_ds.indices[:args.max_samples]
@@ -118,7 +155,7 @@ def main():
     trainer_config = {
         "model_name": model_name,
         "use_physics_loss": True,
-        "normalize_precip": False,  # ChannelNormalize already normalizes; loss stays in mm/h-space of normalized P
+        "normalize_precip": False,  # ChannelNormalize already normalizes
         "precip_vmax": 100.0,
         "physics_loss": {
             "lambda_extreme": phy_cfg.get("lambda_extreme", 0.5),
@@ -130,14 +167,14 @@ def main():
         "lr_patience": train_cfg.get("lr_patience", 10),
         "early_stopping_patience": train_cfg.get("early_stopping_patience", 10),
         "grad_clip_norm": train_cfg.get("grad_clip_norm", 1.0),
-        "use_amp": False,  # CPU-safe
+        "use_amp": use_amp,
         "checkpoint_dir": os.path.join(args.out, "models"),
         "log_dir": os.path.join(args.out, "logs"),
     }
 
     t0 = time.time()
     trainer = Trainer(model, train_loader, val_loader, trainer_config)
-    trainer.train(epochs=args.epochs)
+    trainer.train(epochs=epochs)
     runtime_s = time.time() - t0
 
     res = evaluate_model(model, val_loader, device, channel_indices=channel_indices)
@@ -145,15 +182,13 @@ def main():
                    runtime_s=runtime_s, n_params=n_params,
                    best_val_loss=trainer.best_val_loss)
 
-    _seal_check(args, test_ids, channel_indices, stats)
+    _seal_check(args, test_ids, channel_indices, stats, batch_size, num_workers, pin_memory)
 
 
-def _seal_check(args, test_ids, channel_indices, stats):
+def _seal_check(args, test_ids, channel_indices, stats, batch_size, num_workers, pin_memory):
     if args.allow_test_eval:
-        _, test_loader = make_loaders(args.h5, test_ids, channel_indices, stats,
-                                      args.batch_size, args.num_workers)
-        # NOTE: test evaluation is intentionally NOT wired to model selection;
-        # it is only printed when the researcher explicitly unseals it.
+        _, test_loader = make_loader(args.h5, test_ids, channel_indices, stats,
+                                     batch_size, num_workers, shuffle=False, pin_memory=pin_memory)
         print("[test] TEST SET EVALUATION ALLOWED BY EXPLICIT FLAG (not used for model selection).")
     else:
         print("[test] TEST SET SEALED — final test evaluation refused (use --allow-test-eval explicitly).")
