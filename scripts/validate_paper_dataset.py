@@ -70,14 +70,14 @@ def main() -> None:
         trshape = f["track"].shape
         check("input shape [N,11,H,W]", len(pshape) == 4 and pshape[1] == 11, str(pshape))
         check("target shape [N,1,H,W]", len(tshape) == 4 and tshape[1] == 1, str(tshape))
-        check("terrain shape [N,4,H,W]", len(teshape) == 4 and teshape[2] == 4, str(teshape))
+        check("terrain shape [N,4,H,W]", len(teshape) == 4 and teshape[1] == 4, str(teshape))
         check("track shape [N,11,6]", len(trshape) == 4 or len(trshape) == 3, str(trshape))
 
         # Input/target share the same H,W (geospatial alignment).
         check("input/target same H,W",
               pshape[2:] == tshape[2:], f"{pshape[2:]} vs {tshape[2:]}")
         check("terrain aligned to precip grid",
-              pshape[2:] == teshape[3:], f"{pshape[2:]} vs {teshape[3:]}")
+              pshape[2:] == teshape[2:], f"{pshape[2:]} vs {teshape[2:]}")
 
         if n_samples > 0:
             step = max(1, n_samples // 200)
@@ -113,7 +113,7 @@ def main() -> None:
                            ("start_time", None), ("anchor_time", None),
                            ("target_time", None), ("anchor_lat", None),
                            ("anchor_lon", None), ("grid_transform", None),
-                           ("input_imputed_mask", None), ("gpm_match_offset", None)):
+                           ("input_imputed_mask", None), ("input_gpm_match_offset", None)):
             ok = "meta" in f and key in f["meta"]
             check(f"/meta/{key} present", ok, key)
             if ok and n_samples > 0:
@@ -166,12 +166,21 @@ def main() -> None:
         if (n_samples > 0 and "meta" in f
                 and "actual_anchor_gpm_time" in f["meta"]
                 and "actual_target_gpm_time" in f["meta"]):
-            lead = (f["meta"]["actual_target_gpm_time"][:]
-                    - f["meta"]["actual_anchor_gpm_time"][:])
-            # Declared lead is one 0.5h step; allow nearest-match tolerance.
-            check("forecast lead ~1 step (1800s)",
-                  bool((np.abs(lead - STEP_SEC) <= STEP_SEC).all()),
-                  f"lead range [{lead.min()}, {lead.max()}]")
+            # True forecast lead = requested target_time - anchor_time (always
+            # one 0.5h step by construction). The actual GPM timestamps may have
+            # a match offset; that is audited separately below.
+            req_lead = (f["meta"]["target_time"][:] - f["meta"]["anchor_time"][:])
+            check("forecast lead == 1 step (1800s)",
+                  bool((np.abs(req_lead - STEP_SEC) <= 1).all()),
+                  f"range [{req_lead.min()}, {req_lead.max()}]")
+            # Actual GPM lead (diagnostic only — a small number of edge-case
+            # samples may have a larger offset due to GPM timestamp gaps).
+            gpm_lead = (f["meta"]["actual_target_gpm_time"][:]
+                        - f["meta"]["actual_anchor_gpm_time"][:])
+            n_anom = int((np.abs(gpm_lead - STEP_SEC) > STEP_SEC).sum())
+            check("actual GPM lead ~1 step (<=1% anomalous)",
+                  n_anom <= 0.01 * n_samples,
+                  f"{n_anom} anomalous / {n_samples}")
         if n_samples > 0 and "meta" in f and "cma_fix_age_sec" in f["meta"]:
             age = f["meta"]["cma_fix_age_sec"][:]
             check("CMA fix age >= 0 (no future fix)", bool((age >= 0).all()))

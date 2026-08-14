@@ -1,0 +1,52 @@
+{
+  "version": "1.0",
+  "fitted_on": "train events only (input + target precipitation)",
+  "train_sample_count": 4894,
+  "precipitation": {
+    "mean": 0.3678,
+    "std": 1.8848,
+    "max": 100.97,
+    "p95": 1.88,
+    "p99": 8.06,
+    "p99_9": 27.12
+  },
+  "track_features": {
+    "center_wind_speed": {
+      "mean": 24.12807581396989,
+      "std": 11.866905660120327
+    },
+    "center_pressure": {
+      "mean": 986.5235353632756,
+      "std": 20.274641840175782
+    },
+    "u_move": {
+      "mean": -6.75934903163827,
+      "std": 18.146563000722065
+    },
+    "v_move": {
+      "mean": 9.560156187556954,
+      "std": 11.636092042504156
+    }
+  },
+  "terrain": {
+    "dem": {
+      "mean": 50.57821329653785,
+      "std": 205.39495080754492
+    },
+    "dh_dx": {
+      "mean": -0.06856858831323104,
+      "std": 4.565214001311914
+    },
+    "dh_dy": {
+      "mean": -0.07602754050918967,
+      "std": 3.5865181413302882
+    }
+  },
+  "land_mask": {
+    "normalize": false
+  },
+  "log1p_precipitation": {
+    "enabled": false,
+    "note": "future experiment option"
+  }
+}

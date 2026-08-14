@@ -33,7 +33,8 @@ import numpy as np
 import pandas as pd
 import h5py
 import rasterio
-from rasterio.windows import Window
+from rasterio.crs import CRS
+from rasterio.transform import from_origin
 from rasterio.warp import reproject, Resampling
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -86,6 +87,9 @@ def parse_best_track(txt_path: str) -> pd.DataFrame:
             wind = float(parts[5])
         except (ValueError, IndexError):
             continue
+        # CMA uses 0-360 deg longitude; normalize to EPSG:4326 (-180..180).
+        if lon > 180.0:
+            lon -= 360.0
         rows.append({
             "Typhoon_ID": str(current_id).zfill(4),
             "Time": pd.to_datetime(parts[0], format="%Y%m%d%H"),
@@ -135,7 +139,7 @@ def causal_track_at(raw: pd.DataFrame, anchor_time: pd.Timestamp):
     if len(avail) < 2:
         return None
 
-    fix_ts = avail["Time"].astype("int64").to_numpy() // 10**9
+    fix_ts = avail["Time"].astype("datetime64[s]").astype("int64").to_numpy()
     fix_lat = avail["Lat"].to_numpy()
     fix_lon = avail["Lon"].to_numpy()
     fix_wind = avail["Wind_Speed"].to_numpy()
@@ -147,12 +151,18 @@ def causal_track_at(raw: pd.DataFrame, anchor_time: pd.Timestamp):
     times = anchor_sec + offsets
 
     lat = np.array([_linear_extrapolate(fix_ts, fix_lat, t) for t in times])
-    lon = np.array([_linear_extrapolate(fix_ts, fix_lon, t) for t in times])
+    # Unwrap longitude (handle the +/-180 dateline discontinuity) before linear
+    # extrapolation, then wrap the result back to [-180, 180].
+    fix_lon_unwrapped = np.unwrap(fix_lon, period=360.0)
+    lon_unwrapped = np.array([_linear_extrapolate(fix_ts, fix_lon_unwrapped, t) for t in times])
+    lon = ((lon_unwrapped + 180.0) % 360.0) - 180.0
     wind = np.array([_persist(fix_ts, fix_wind, t) for t in times])
     pres = np.array([_persist(fix_ts, fix_pres, t) for t in times])
 
     # Translation velocities from causal positions (forward differences).
-    dlon = np.diff(lon)   # per DT_H hours
+    # Use the UNWRAPPED longitude for dlon so dateline crossings do not
+    # produce spurious huge zonal velocities.
+    dlon = np.diff(lon_unwrapped)   # per DT_H hours
     dlat = np.diff(lat)
     cos_lat = np.cos(np.radians(lat[1:]))
     u_move = dlon * _KM_PER_DEG_LAT * cos_lat / DT_H
@@ -209,19 +219,38 @@ def lookup_gpm(index, typhoon_id, time, tolerance_sec):
 # Anchor grid + DEM (physical terrain-gradient units)
 # ---------------------------------------------------------------------------
 
-def compute_anchor_grid(gpm_transform, gpm_crs, anchor_lat, anchor_lon,
-                        grid_size=GRID_SIZE):
-    col, row = ~gpm_transform * (anchor_lon, anchor_lat)
-    col, row = int(np.round(col)), int(np.round(row))
-    window = Window(col - grid_size // 2, row - grid_size // 2, grid_size, grid_size)
-    win_transform = rasterio.windows.transform(window, gpm_transform)
-    return window, win_transform, gpm_crs
+def anchor_grid_transform(anchor_lat, anchor_lon, grid_size=GRID_SIZE, pixel=0.1):
+    """Canonical NORTH-UP anchor grid transform (0.1-deg pixels, 128x128)."""
+    half = (grid_size / 2.0) * pixel
+    x_min = anchor_lon - half
+    y_max = anchor_lat + half
+    return from_origin(x_min, y_max, pixel, pixel)
 
 
-def read_precip_window(tif_path, window):
+def reproject_to_grid(src, dst_transform, dst_crs, grid_size=GRID_SIZE):
+    """Reproject an OPEN rasterio source onto the canonical anchor grid.
+
+    Uses the source's OWN transform/CRS, so per-file tile offsets are handled
+    correctly. Returns a [grid_size, grid_size] north-up float32 array.
+    """
+    dest = np.zeros((grid_size, grid_size), dtype="float32")
+    reproject(
+        source=rasterio.band(src, 1),
+        destination=dest,
+        src_transform=src.transform,
+        src_crs=src.crs,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        resampling=Resampling.bilinear,
+    )
+    return dest
+
+
+def precip_grid_from_path(raster_path, dst_transform, dst_crs, grid_size=GRID_SIZE):
+    """Open a GPM TIF and read it onto the anchor grid, then clean values."""
     try:
-        with rasterio.open(tif_path) as src:
-            crop = src.read(1, window=window, boundless=True, fill_value=0.0)
+        with rasterio.open(raster_path) as src:
+            crop = reproject_to_grid(src, dst_transform, dst_crs, grid_size)
     except Exception:
         return None
     crop = np.where(np.isnan(crop), 0.0, crop)
@@ -229,33 +258,13 @@ def read_precip_window(tif_path, window):
     return crop.astype("float32")
 
 
-def resample_dem_to_grid(dem_path, gpm_crs, win_transform, grid_size=GRID_SIZE):
-    if not Path(dem_path).exists():
-        return None
-    dest = np.zeros((grid_size, grid_size), dtype="float32")
-    try:
-        with rasterio.open(dem_path) as src:
-            reproject(
-                source=rasterio.band(src, 1),
-                destination=dest,
-                src_transform=src.transform,
-                src_crs=src.crs,
-                dst_transform=win_transform,
-                dst_crs=gpm_crs,
-                resampling=Resampling.bilinear,
-            )
-    except Exception:
-        return None
-    return dest
-
-
-def terrain_from_dem(dem, win_transform, anchor_lat):
+def terrain_from_dem(dem, anchor_transform, anchor_lat):
     """Terrain channels with PHYSICAL gradient units (m/km)."""
     dem = np.clip(dem, 0.0, None).astype("float32")
     land_mask = (dem > 0.0).astype("float32")
 
-    pixel_deg_x = abs(float(win_transform.a))
-    pixel_deg_y = abs(float(win_transform.e))
+    pixel_deg_x = abs(float(anchor_transform.a))
+    pixel_deg_y = abs(float(anchor_transform.e))
     km_per_deg_lon = _KM_PER_DEG_LAT * np.cos(np.radians(anchor_lat))
     dx_km = pixel_deg_x * km_per_deg_lon   # zonal km per pixel
     dy_km = pixel_deg_y * _KM_PER_DEG_LAT  # meridional km per pixel
@@ -327,6 +336,7 @@ class StreamingH5Writer:
         self.f.attrs["precipitation_units"] = PRECIP_UNITS
         self.f.attrs["created_by"] = "scripts/build_paper_dataset.py"
         self.f.close()
+        self.f = None  # release the OS file handle promptly (Windows)
         return n
 
 
@@ -353,16 +363,13 @@ def main() -> None:
 
     tif_index = build_tif_index(args.tif_dir)
 
-    ref_crs, ref_transform = None, None
-    for tid_frames in tif_index.values():
-        for p in tid_frames.values():
-            with rasterio.open(p) as src:
-                ref_crs, ref_transform = src.crs, src.transform
-            break
-        if ref_transform is not None:
-            break
-    if ref_transform is None:
-        raise RuntimeError("No GPM TIFs found to establish the reference grid.")
+    # GPM IMERG is EPSG:4326; the canonical anchor grid uses this fixed CRS.
+    grid_crs = CRS.from_epsg(4326)
+
+    # Open the (large) DEM once and reuse it across all samples.
+    dem_src = None
+    if Path(args.dem).exists():
+        dem_src = rasterio.open(args.dem)
 
     n_samples = 0
     n_dropped = 0
@@ -372,6 +379,10 @@ def main() -> None:
         raw = raw.sort_values("Time").reset_index(drop=True)
         if len(raw) < 2:
             continue
+        # Skip typhoons with no GPM precipitation coverage (avoids wasted DEM
+        # resampling for ~266 uncovered events, incl. unnamed '0000').
+        if typhoon_id not in tif_index:
+            continue
 
         grid = pd.date_range(
             raw["Time"].min().floor("30min"),
@@ -380,8 +391,8 @@ def main() -> None:
         )
 
         for i in range(INPUT_SEQ_LEN, len(grid)):
-            anchor_time = grid[i]
             frame_times = grid[i - INPUT_SEQ_LEN:i + 1]   # 11 input + 1 target
+            anchor_time = frame_times[INPUT_SEQ_LEN - 1]  # LAST input frame (grid[i-1])
 
             # Causal track (P0): only fixes <= anchor_time.
             result = causal_track_at(raw, anchor_time)
@@ -393,14 +404,12 @@ def main() -> None:
             anchor_lat = float(track[-1, 0])
             anchor_lon = float(track[-1, 1])
 
-            window, win_transform, grid_crs = compute_anchor_grid(
-                ref_transform, ref_crs, anchor_lat, anchor_lon
-            )
-            dem = resample_dem_to_grid(args.dem, grid_crs, win_transform)
-            if dem is None:
+            anchor_transform = anchor_grid_transform(anchor_lat, anchor_lon)
+            if dem_src is None:
                 n_dropped += 1
                 continue
-            dem, dh_dx, dh_dy, land_mask = terrain_from_dem(dem, win_transform, anchor_lat)
+            dem = reproject_to_grid(dem_src, anchor_transform, grid_crs)
+            dem, dh_dx, dh_dy, land_mask = terrain_from_dem(dem, anchor_transform, anchor_lat)
             terrain = np.stack([dem, dh_dx, dh_dy, land_mask], axis=0)
 
             # Precip for all 12 frames on the same anchor grid.
@@ -418,7 +427,7 @@ def main() -> None:
                 if path is None:
                     precip.append(None)
                     continue
-                crop = read_precip_window(path, window)
+                crop = precip_grid_from_path(path, anchor_transform, grid_crs)
                 precip.append(crop)
                 if is_target:
                     target_offset = float(offset) if offset is not None else np.nan
@@ -475,14 +484,20 @@ def main() -> None:
                 "meta/anchor_lat": np.float32(anchor_lat),
                 "meta/anchor_lon": np.float32(anchor_lon),
                 "meta/grid_transform": np.asarray([
-                    win_transform.a, win_transform.b, win_transform.c,
-                    win_transform.d, win_transform.e, win_transform.f,
+                    anchor_transform.a, anchor_transform.b, anchor_transform.c,
+                    anchor_transform.d, anchor_transform.e, anchor_transform.f,
                 ], dtype="float64"),
                 "meta/input_imputed_mask": imputed_mask,
                 "meta/input_gpm_match_offset": input_offsets,
                 "meta/target_gpm_match_offset": np.float32(target_offset),
-                "meta/actual_anchor_gpm_time": np.int64(actual_anchor_gpm or 0),
-                "meta/actual_target_gpm_time": np.int64(actual_target_gpm or 0),
+                "meta/actual_anchor_gpm_time": np.int64(
+                    actual_anchor_gpm if actual_anchor_gpm is not None
+                    else int(anchor_time.timestamp())
+                ),
+                "meta/actual_target_gpm_time": np.int64(
+                    actual_target_gpm if actual_target_gpm is not None
+                    else int(frame_times[-1].timestamp())
+                ),
             }
             if args.dry_run:
                 n_samples += 1

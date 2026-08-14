@@ -31,8 +31,8 @@ def _make_h5(path: Path, n: int, with_meta: bool = True,
         f.create_dataset("data", data=data)
         if with_meta:
             g = f.create_group("meta")
-            g.create_dataset("year", data=np.asarray(years or [2014] * n))
-            g.create_dataset("typhoon_id", data=np.asarray(tids or list(range(n))))
+            g.create_dataset("year", data=np.asarray(years if years is not None else [2014] * n))
+            g.create_dataset("typhoon_id", data=np.asarray(tids if tids is not None else list(range(n))))
     return str(path)
 
 
@@ -97,7 +97,9 @@ def test_nonneg_removed():
 
     components = PhysicsInformedLoss().components
     assert "nonneg" not in components, f"nonneg still in {components}"
-    assert "rain" in components and "extreme" in components
+    assert "rain" in components
+    # MSE-only is the default; extreme/smooth are explicit opt-in.
+    assert components == ["rain"], components
 
 
 def test_mse_and_extreme_independent():

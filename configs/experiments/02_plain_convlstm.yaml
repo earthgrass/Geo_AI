@@ -1,0 +1,49 @@
+# Experiment: Plain ConvLSTM (E1)
+# Input channels: precipitation only
+# Loss components: rain
+# NOTE: channel-subset selection is a training-phase TODO; the dataset currently
+# reconstructs all 12 channels. `input_channels` documents the intended subset.
+data:
+  h5_path: "ConvLSTM_Dataset_128.h5"
+  seq_len: 11
+  precip_channel_idx: 0
+  num_workers: 4
+  normalize: true
+  precip_vmax: 100.0
+
+model:
+  name: "PlainConvLSTM"
+  input_channels: 1
+  precip_channel_idx: 0
+  hidden_dims: [64, 128]
+  kernel_size: 3
+  use_attention: false
+
+training:
+  batch_size: 8
+  epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  lr_patience: 10
+  early_stopping_patience: 20
+  grad_clip_norm: 1.0
+  use_amp: true
+  seed: 42
+
+physics_loss:
+  use_physics_loss: true
+  lambda_smooth: 0.01
+  lambda_extreme: 0.5
+  lambda_oro: 0.1
+  extreme_threshold: 10.0
+  orographic:
+    enabled: false
+    u_channel: null
+    v_channel: null
+    dh_dx_channel: 9
+    dh_dy_channel: 10
+  components: [rain]
+
+output:
+  checkpoint_dir: "outputs/models/02_plain_convlstm"
+  log_dir: "outputs/logs/02_plain_convlstm"

@@ -60,6 +60,75 @@ def test_future_cma_cannot_alter_sample():
     assert not np.allclose(track1, track3)
 
 
+# 1b. Regression: causal track must yield valid geography (guards against the
+#     pandas-3.0 datetime64[us] -> unit bug that produced lat/lon ~ 1e8).
+def test_causal_track_valid_geography():
+    import numpy as np
+    import pandas as pd
+    from build_paper_dataset import causal_track_at
+
+    # format= produces datetime64[us] on pandas 3.0 (same path as the CMA parser).
+    times = pd.to_datetime(
+        ["2020010100", "2020010106", "2020010112", "2020010118"],
+        format="%Y%m%d%H",
+    )
+    raw = pd.DataFrame({
+        "Time": times,
+        "Lat": [10.0, 10.5, 11.0, 11.5],
+        "Lon": [120.0, 120.5, 121.0, 121.5],
+        "Pressure": [1000.0, 990.0, 980.0, 970.0],
+        "Wind_Speed": [20.0, 25.0, 30.0, 35.0],
+    })
+    track, _, _ = causal_track_at(raw, pd.Timestamp("2020-01-01 15:00:00"))
+    assert np.all(np.abs(track[:, 0]) <= 90.0), track[:, 0]
+    assert np.all(np.abs(track[:, 1]) <= 180.0), track[:, 1]
+    assert np.all(track[:, 2] >= 0.0)   # wind >= 0
+    assert np.all(track[:, 3] > 0.0)    # pressure > 0
+
+
+# 1c. Regression: CMA 0-360 longitude must be normalized to EPSG:4326 (-180..180).
+def test_longitude_normalized():
+    import pandas as pd
+    from build_paper_dataset import parse_best_track
+    import tempfile, os
+
+    lines = [
+        "66666 0000    2 0001 2401 0 6 TEST                             20250101",
+        "2025010100 1 200 2150 1000 20",   # lon 215.0 -> -145.0
+        "2025010106 1 210 2200 995 22",   # lon 220.0 -> -140.0
+    ]
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fp:
+        fp.write("\n".join(lines))
+        p = fp.name
+    df = parse_best_track(p)
+    os.unlink(p)
+    assert (df["Lon"] < 180).all() and (df["Lon"] > -180).all()
+    assert abs(df["Lon"].iloc[0] - (-145.0)) < 1e-6
+
+
+# 1d. Regression: dateline crossing must not produce spurious u_move velocities.
+def test_dateline_umove_plausible():
+    import numpy as np
+    import pandas as pd
+    from build_paper_dataset import causal_track_at
+
+    # Longitude crossing the +180/-180 dateline.
+    times = pd.to_datetime(
+        ["2020010100", "2020010106", "2020010112", "2020010118"],
+        format="%Y%m%d%H",
+    )
+    raw = pd.DataFrame({
+        "Time": times,
+        "Lat": [20.0, 20.2, 20.4, 20.6],
+        "Lon": [178.0, -178.0, -176.0, -174.0],  # crosses dateline eastward
+        "Pressure": [1000.0, 990.0, 980.0, 970.0],
+        "Wind_Speed": [20.0, 25.0, 30.0, 35.0],
+    })
+    track, _, _ = causal_track_at(raw, pd.Timestamp("2020-01-01 15:00:00"))
+    u_move = track[:, 4]
+    assert np.all(np.abs(u_move) < 100.0), u_move  # km/h, not thousands
+
+
 # 2. Terrain gradients have physical units (m/km).
 def test_terrain_gradient_units():
     import numpy as np
@@ -126,8 +195,8 @@ def test_target_actual_lead_recorded():
         w.add(_sample(actual_anchor=1000, actual_target=2800, tgt_off=0.0))
         w.close()
         with h5py.File(out, "r") as f:
-            assert "meta/actual_anchor_gpm_time" in f["meta"]
-            assert "meta/actual_target_gpm_time" in f["meta"]
+            assert "actual_anchor_gpm_time" in f["meta"]
+            assert "actual_target_gpm_time" in f["meta"]
             lead = f["meta"]["actual_target_gpm_time"][0] - f["meta"]["actual_anchor_gpm_time"][0]
             assert lead == 1800, lead
 

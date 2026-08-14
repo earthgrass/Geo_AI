@@ -1,0 +1,54 @@
+# Event-level train/val/test split (frozen BEFORE training).
+#
+# Source: DATA_COVERAGE_T15.csv / DATA_COVERAGE_EXACT.csv (2026-08-14)
+# Policy: temporal split over the 36 typhoon events with usable GPM coverage.
+#   - train: 2014-2021  (25 events)
+#   - val:   2022       (7 events)
+#   - test:  2023-2024  (4 events, most recent = genuinely unseen)
+#
+# A typhoon event appears in EXACTLY ONE split (asserted via
+# assert_disjoint_event_split). Do NOT optimize this split against future model
+# results.
+version: "1.0"
+
+train:
+  - 1410
+  - 1413
+  - 1506
+  - 1508
+  - 1514
+  - 1523
+  - 1525
+  - 1610
+  - 1616
+  - 1707
+  - 1708
+  - 1710
+  - 1714
+  - 1715
+  - 1717
+  - 1719
+  - 1805
+  - 1812
+  - 1817
+  - 2001
+  - 2002
+  - 2003
+  - 2005
+  - 2006
+  - 2111
+
+val:
+  - 2203
+  - 2205
+  - 2208
+  - 2210
+  - 2212
+  - 2214
+  - 2217
+
+test:
+  - 2306
+  - 2310
+  - 2402
+  - 2418

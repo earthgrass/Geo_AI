@@ -41,37 +41,29 @@ def _write_raster(path, transform, crs, data):
 
 def test_dem_resampled_to_gpm_grid():
     import numpy as np
-    import rasterio
     from rasterio.crs import CRS
     from rasterio.transform import from_origin
-    from build_paper_dataset import compute_anchor_grid, resample_dem_to_grid
+    from build_paper_dataset import anchor_grid_transform, reproject_to_grid
 
     crs = CRS.from_epsg(4326)
     with tempfile.TemporaryDirectory() as tmp:
-        # GPM-like raster: 0.1 deg pixels.
-        gpm_tf = from_origin(100.0, 30.0, 0.1, 0.1)
-        gpm_data = np.ones((100, 100), dtype="float32")
-        gpm_path = Path(tmp) / "gpm.tif"
-        _write_raster(gpm_path, gpm_tf, crs, gpm_data)
-
         # DEM-like raster: 1 arc-min (~0.0167 deg) pixels — DIFFERENT resolution.
         dem_tf = from_origin(99.0, 31.0, 1 / 60.0, 1 / 60.0)
         dem_data = np.random.rand(600, 600).astype("float32") * 1000.0
         dem_path = Path(tmp) / "dem.tif"
         _write_raster(dem_path, dem_tf, crs, dem_data)
 
-        # Anchor grid from the GPM transform.
-        with rasterio.open(gpm_path) as src:
-            window, win_transform, grid_crs = compute_anchor_grid(
-                src.transform, src.crs, 25.0, 105.0, grid_size=128
-            )
-
-        dem_resampled = resample_dem_to_grid(str(dem_path), grid_crs, win_transform, 128)
+        # Canonical north-up anchor grid at 0.1 deg (the GPM grid).
+        anchor_transform = anchor_grid_transform(25.0, 105.0, grid_size=128)
+        import rasterio
+        with rasterio.open(dem_path) as src:
+            dem_resampled = reproject_to_grid(src, anchor_transform, crs, 128)
         assert dem_resampled is not None
         assert dem_resampled.shape == (128, 128), dem_resampled.shape
-        # Resampled DEM lives on the GPM grid (pixel size == 0.1 deg).
-        assert abs(win_transform.a - 0.1) < 1e-6
-        # Different native resolutions: DEM (1/60) != GPM (0.1).
+        # Resampled DEM lives on the 0.1-deg north-up anchor grid.
+        assert abs(anchor_transform.a - 0.1) < 1e-6
+        assert anchor_transform.e < 0  # north-up
+        # Different native resolutions: DEM (1/60) != anchor (0.1).
         assert abs(1 / 60.0 - 0.1) > 1e-3
 
 
@@ -140,7 +132,7 @@ def test_streaming_writer_incremental():
     import h5py
     from build_paper_dataset import StreamingH5Writer
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         out = Path(tmp) / "d.h5"
         w = StreamingH5Writer(str(out), grid_size=4, buffer_size=2)
         for i in range(5):
@@ -158,13 +150,24 @@ def test_streaming_writer_incremental():
                 "meta/anchor_lon": np.float32(120.0),
                 "meta/grid_transform": np.zeros(6, dtype="float64"),
                 "meta/input_imputed_mask": np.zeros(11, dtype="uint8"),
-                "meta/gpm_match_offset": np.zeros(11, dtype="float32"),
+                "meta/input_gpm_match_offset": np.zeros(11, dtype="float32"),
+                "meta/target_gpm_match_offset": np.float32(0.0),
+                "meta/latest_cma_fix_time": np.int64(0),
+                "meta/cma_fix_age_sec": np.float32(0.0),
+                "meta/actual_anchor_gpm_time": np.int64(i),
+                "meta/actual_target_gpm_time": np.int64(i),
             })
         n = w.close()
         assert n == 5
         with h5py.File(out, "r") as f:
             assert f["precip/input"].shape == (5, 11, 4, 4)
             assert f["meta/typhoon_id"].shape == (5,)
+        # Windows: h5py may hold the file handle briefly after close; force
+        # release before the temporary directory is removed.
+        import gc
+        gc.collect()
+        import time
+        time.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------
