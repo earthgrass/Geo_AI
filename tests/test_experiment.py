@@ -160,8 +160,8 @@ def test_trajgru_train_eval_semantics_match():
             "log_dir": str(Path(tmp) / "logs"),
         }
         trainer = Trainer(model, _L(), _L(), cfg)
-        X = torch.randn(2, 11, 1, 8, 8)
-        P_prev = torch.rand(2, 1, 8, 8)
+        X = torch.randn(2, 11, 1, 8, 8, device=trainer.device)
+        P_prev = torch.rand(2, 1, 8, 8, device=trainer.device)
 
         out_train = trainer._predict_precipitation(X, P_prev)
         out_eval = predict_absolute(model, X)
