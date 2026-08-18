@@ -23,7 +23,7 @@
 `62e9ba0`（科研决策报告）+ 本轮工程改造 commits（见 §15）
 
 ## 2. pytest 数量
-**66 passed**（2026-08-18 implementation gate 后；含 `test_evaluation_protocol_v2.py` 与更新后的 `test_experiment.py`）
+**69 passed**（2026-08-18 implementation gate 后；含 `test_evaluation_protocol_v2.py` 与更新后的 `test_experiment.py`）
 
 ## 3. channel subset implementation
 - ✅ `src/data/dataset.py`：`TyphoonDataset(channel_indices=[...])`，`_reconstruct_input` 构建 12 通道后按 canonical 索引选取子集。
@@ -115,6 +115,6 @@ CPU smoke test（E2 ResConvLSTM，8 样本 × 1 epoch）：
 
 ## 最终判定
 
-**PARTIAL（BACKBONE_GATE_STATUS / GPU_TRAINING_GATE=CLOSED）**：evaluator v2 与双轴实验基础设施已实现并全部 tests 通过；E2 已完成（legacy v1 归档）并在 validation-only 下用 v2 重评估。剩余 E0/E1/B1 与 I3/I4/I5、P1/P2/P3 由三个 GPU 脚本在下次 AutoDL 开机时执行。
+**PARTIAL（BACKBONE_GATE_STATUS / GPU_TRAINING_GATE=CLOSED）**：evaluator v2 与双轴实验基础设施已实现并全部 tests 通过；E2 已完成（legacy v1 归档）；evaluator-v2 validation-only 重评估仍 PENDING，待在 GPU 主机完成后方可打开 GPU_TRAINING_GATE。剩余 E0/E1/B1 与 I3/I4/I5、P1/P2/P3 由三个 GPU 脚本在下次 AutoDL 开机时执行。
 
 **不宣称任何论文结论。当前仅 E2 一项 validation 证据；test 仍 SEALED。**
