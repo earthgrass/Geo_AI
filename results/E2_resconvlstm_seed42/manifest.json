@@ -1,0 +1,40 @@
+{
+  "experiment": "E2",
+  "model": "ResConvLSTM",
+  "seed": 42,
+  "batch_size": 4,
+  "max_epochs": 20,
+  "best_epoch": 18,
+  "best_val_loss": 0.00015986856626067596,
+  "runtime_seconds": 1365.5655670166016,
+  "n_params": 1155714,
+  "device": "cuda",
+  "amp": true,
+  "train_samples": 4894,
+  "val_samples": 1266,
+  "git_commit_used_for_training": "cbcd46869d82dfc9fe7b9f811272c2404786e0d9",
+  "git_commit_note": "Local HEAD at archival time; assumed to be the commit the cloud run trained on. Confirm against the AutoDL workspace if exactness matters.",
+  "checkpoint_local_path": "saved_models/E2_resconvlstm_seed42/E2_resconvlstm_seed42_best.pth",
+  "test_status": "SEALED",
+  "input_channel_indices": [0],
+  "input_channels_note": "precipitation-only (canonical channel 0); seq_len=11 -> predict 1 (30 min)",
+  "normalization": "configs/normalization_v1.json (train-only fit, frozen)",
+  "split": "configs/splits_v1.yaml (train 25 / val 7 / test 4 events)",
+  "physics_loss": {
+    "components": ["rain"],
+    "lambda_extreme": 0.5,
+    "extreme_threshold_mmh": 10.0
+  },
+  "validation_metrics": {
+    "MAE_mmh": 0.23722,
+    "RMSE_mmh": 0.70091,
+    "SSIM": 0.90271,
+    "CSI_5mmh": 0.23397,
+    "CSI_10mmh": 0.14652,
+    "CSI_20mmh": 0.04907,
+    "CSI_30mmh": 0.01469,
+    "POD_10mmh": 0.18786,
+    "FAR_10mmh": 0.18120,
+    "HSS_10mmh": 0.20441
+  }
+}

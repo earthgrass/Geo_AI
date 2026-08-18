@@ -1,7 +1,17 @@
 # EXPERIMENT_PHASE_REPORT — 正式实验阶段报告
 
-> 生成日期：2026-08-14
-> 阶段：实验基础设施实现 + CPU smoke test（完整训练因无 GPU 推迟）
+> 生成日期：2026-08-14（2026-08-18 更新：首次 GPU 实验 E2 完成）
+> 阶段：实验基础设施实现 + CPU smoke test + 首次 GPU 实验（E2）
+
+---
+
+## 0. GPU 实验状态（2026-08-18 更新）
+
+- E2_GPU_RUN_STATUS = COMPLETED
+- E2_BEST_EPOCH = 18
+- E2_BEST_VAL_LOSS = 0.0001598686
+- TEST_STATUS = SEALED
+- BACKBONE_GATE_STATUS = PARTIAL（E2 完成；E0/E1/B1 待 GPU，见 scripts/run_backbone_gate.sh）
 
 ---
 
@@ -23,7 +33,7 @@
 - ✅ smoke test 确认默认拒绝 test。
 
 ## 5. Phase 1 results（Backbone sanity）
-**未运行**（无 GPU，CPU 完整训练不可行）。
+**PARTIAL**：E2 ResConvLSTM 已在 GPU 完成（seed 42，20 epoch，best val loss 0.0001598686）；E0/E1/B1 待 GPU 执行。
 
 CPU smoke test（E2 ResConvLSTM，8 样本 × 1 epoch）：
 - params = 1,155,714
@@ -88,8 +98,6 @@ CPU smoke test（E2 ResConvLSTM，8 样本 × 1 epoch）：
 
 ## 最终判定
 
-**BLOCKED**（无 GPU，完整训练不可行）。
+**PARTIAL（BACKBONE_GATE_STATUS）**：基础设施全部就绪，E2 ResConvLSTM 已在 GPU 完成并归档（results/E2_resconvlstm_seed42/）。剩余 E0/E1/B1 由 scripts/run_backbone_gate.sh 在下次 GPU 开机时执行。
 
-但**所有实验基础设施已就绪且通过测试**：channel subset、TrajGRU、test 封存、事件级评估器、地形阈值、冻结实验矩阵。剩余工作只是在 GPU 环境执行训练。
-
-**不宣称任何论文结论。当前仅为 validation-stage 基础设施与 smoke-test 证据。**
+**不宣称任何论文结论。当前仅 E2 一项 validation 证据；test 仍 SEALED。**

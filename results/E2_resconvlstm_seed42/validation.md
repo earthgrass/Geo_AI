@@ -1,0 +1,70 @@
+## Experiment: ResConvLSTM
+- mode: trained
+- device: cuda
+- n_val_windows: 1266
+- runtime_s: 1365.5655670166016
+- n_params: 1155714
+- best_val_loss: 0.00015986856626067596
+
+### Overall validation metrics
+- ACC_10mmh: 0.99476
+- ACC_20mmh: 0.99814
+- ACC_30mmh: 0.99911
+- ACC_5mmh: 0.98700
+- BIAS_10mmh: 0.35686
+- BIAS_20mmh: 0.29201
+- BIAS_30mmh: 0.31681
+- BIAS_5mmh: 0.54278
+- CSI_10mmh: 0.14652
+- CSI_20mmh: 0.04907
+- CSI_30mmh: 0.01469
+- CSI_5mmh: 0.23397
+- FAR_10mmh: 0.18120
+- FAR_20mmh: 0.09386
+- FAR_30mmh: 0.03733
+- FAR_5mmh: 0.16704
+- HSS_10mmh: 0.20441
+- HSS_20mmh: 0.07146
+- HSS_30mmh: 0.02232
+- HSS_5mmh: 0.30234
+- MAE: 0.23722
+- NRMSE: 1623.65774
+- POD_10mmh: 0.18786
+- POD_20mmh: 0.06305
+- POD_30mmh: 0.01890
+- POD_5mmh: 0.29950
+- RMSE: 0.70091
+- SSIM: 0.90271
+- a_hits_10mmh: 61.59084
+- a_hits_20mmh: 12.46130
+- a_hits_30mmh: 3.17773
+- a_hits_5mmh: 227.74882
+- acc_extreme: 0.15591
+- acc_heavy: 0.43850
+- acc_light: 0.74439
+- acc_moderate: 0.52755
+- acc_torrential: 0.30809
+- b_false_alarms_10mmh: 36.56003
+- b_false_alarms_20mmh: 9.60032
+- b_false_alarms_30mmh: 2.69194
+- b_false_alarms_5mmh: 102.26145
+- c_misses_10mmh: 49.33096
+- c_misses_20mmh: 20.86098
+- c_misses_30mmh: 11.84518
+- c_misses_5mmh: 110.77330
+- center_displacement_km: 45.60675
+- peak_error: 7.57432
+- peak_rel_error: 52384.09651
+- storm_area_error_km2: 21383.41232
+- storm_area_pred_km2: 163514.53397
+- storm_area_rel_error: 0.15864
+- storm_area_true_km2: 146094.15482
+
+### Per-event validation metrics (typhoon_id: MAE/RMSE/CSI@10/CSI@20)
+- 2203: MAE=0.6006 RMSE=1.7067 CSI_10=nan CSI_20=nan
+- 2205: MAE=0.2685 RMSE=0.8599 CSI_10=nan CSI_20=nan
+- 2208: MAE=0.0004 RMSE=0.0041 CSI_10=nan CSI_20=nan
+- 2210: MAE=0.0004 RMSE=0.0041 CSI_10=nan CSI_20=nan
+- 2212: MAE=0.0004 RMSE=0.0041 CSI_10=nan CSI_20=nan
+- 2214: MAE=0.0024 RMSE=0.0209 CSI_10=nan CSI_20=nan
+- 2217: MAE=0.0461 RMSE=0.2416 CSI_10=nan CSI_20=nan
