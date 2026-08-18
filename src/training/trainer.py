@@ -23,6 +23,7 @@ from ..data.dataset import TyphoonDataset
 from ..data.transforms import Compose, MinMaxNormalize
 from ..models.pi_res_convlstm import PIResConvLSTM
 from ..models.baselines import PlainConvLSTM, ResConvLSTM
+from ..models.trajgru import TrajGRU
 from .physics_loss import PhysicsInformedLoss
 
 
@@ -120,9 +121,13 @@ def create_model(name: str, **kwargs) -> nn.Module:
     elif name == "PlainConvLSTM":
         allowed = {'hidden_dims', 'kernel_size'}
         return PlainConvLSTM(**{k: v for k, v in kwargs.items() if k in allowed})
+    elif name == "TrajGRU":
+        allowed = {'input_channels', 'hidden_dims', 'kernel_size'}
+        return TrajGRU(**{k: v for k, v in kwargs.items() if k in allowed})
     else:
         raise ValueError(f"Unknown model: {name}. "
-                         f"Choose from: PI-ResConvLSTM, ResConvLSTM, PlainConvLSTM")
+                         f"Choose from: PI-ResConvLSTM, ResConvLSTM, "
+                         f"PlainConvLSTM, TrajGRU")
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +213,19 @@ class Trainer:
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
 
-        self.best_val_loss = float('inf')
+        # Frozen checkpoint-selection rule: minimum validation base (rain) MSE.
+        # Auxiliary-loss totals are logged but NEVER select the epoch.
+        self.selection_metric = config.get(
+            'checkpoint_selection_metric', 'rain_mse')
+        if self.selection_metric not in ('rain_mse', 'val_base_mse'):
+            raise ValueError(
+                f"checkpoint_selection_metric must be 'rain_mse' (base MSE), "
+                f"got {self.selection_metric!r}."
+            )
+        self.best_val_mse = float('inf')   # selection signal (base rain MSE)
+        self.best_val_total = float('inf')  # composite val total (logged only)
+        self.best_val_loss = self.best_val_mse  # alias = selection value
+        self.best_epoch = -1                 # 0-indexed best epoch
         self.patience_counter = 0
         self.current_epoch = 0
 
@@ -224,8 +241,21 @@ class Trainer:
         X: torch.Tensor,
         P_prev: torch.Tensor,
     ) -> torch.Tensor:
-        """Return absolute precipitation prediction for every model family."""
-        if isinstance(self.model, PlainConvLSTM):
+        """Return absolute precipitation prediction for every model family.
+
+        Frozen prediction contract (docs/RESEARCH_DESIGN_C_FREEZE.md §13):
+        - PlainConvLSTM and TrajGRU are ABSOLUTE-output models: their forward
+          already applies a ReLU precipitation head, so the output IS the
+          precipitation field. Adding ``P_prev`` again would double-count.
+        - ResConvLSTM / PI-ResConvLSTM output a residual delta; the absolute
+          prediction is ``ReLU(P_prev + delta)``.
+
+        Both branches therefore return the SAME absolute tensor the evaluator
+        consumes (evaluator.predict_absolute), so train/validation/evaluation
+        semantics never diverge.
+        """
+        if isinstance(self.model, (PlainConvLSTM, TrajGRU)):
+            # Precipitation-only absolute-output models.
             return self.model(X[:, :, 0:1, :, :])
 
         delta_p = self.model(X)
@@ -411,16 +441,22 @@ class Trainer:
             # Validate
             val_metrics = self.validate()
 
-            # Scheduler step
-            val_total = val_metrics.get('total',
-                          val_metrics.get('rain',
-                          val_metrics.get('loss', 0.0)))
-            self.scheduler.step(val_total)
+            # Selection signal: unweighted validation base (rain) MSE.
+            val_rain = val_metrics.get(
+                'rain', val_metrics.get('loss', float('inf')))
+            val_total = val_metrics.get('total', val_rain)
 
-            # Early stopping check
-            is_best = val_total < self.best_val_loss
+            # LR scheduling tracks the same base-MSE selection signal so the
+            # reduction never responds to a composite loss the design freezes
+            # out of selection.
+            self.scheduler.step(val_rain)
+
+            # Early stopping check (strict <: earliest epoch wins an exact tie).
+            is_best = val_rain < self.best_val_mse
             if is_best:
-                self.best_val_loss = val_total
+                self.best_val_mse = val_rain
+                self.best_val_total = val_total
+                self.best_epoch = epoch
                 self.patience_counter = 0
                 self._save_checkpoint('best')
             else:
@@ -439,8 +475,9 @@ class Trainer:
             print(
                 f"Epoch {epoch+1:3d}/{epochs} | "
                 f"Train: {train_metrics.get('total', 0):.4f} | "
-                f"Val: {val_total:.4f} | "
-                f"Best: {self.best_val_loss:.4f} | "
+                f"ValTotal: {val_total:.4f} | "
+                f"ValMSE: {val_rain:.6f} | "
+                f"BestMSE: {self.best_val_mse:.6f} | "
                 f"LR: {lr:.2e} | "
                 f"Time: {elapsed:.1f}s"
             )
@@ -453,11 +490,19 @@ class Trainer:
         # Load best weights
         self._load_best()
 
-        # Save history
+        # Save history with explicit selection metadata.
+        history['selection_metric'] = self.selection_metric
+        history['best_val_mse'] = self.best_val_mse
+        history['best_val_total'] = self.best_val_total
+        history['best_epoch'] = self.best_epoch + 1  # 1-indexed
         with open(os.path.join(self.log_dir, 'history.json'), 'w') as f:
             json.dump(history, f, indent=2)
 
-        print(f"\nTraining complete. Best val loss: {self.best_val_loss:.6f}")
+        print(
+            f"\nTraining complete. Best val base MSE: {self.best_val_mse:.8f} "
+            f"(epoch {self.best_epoch + 1}, selection_metric="
+            f"{self.selection_metric}, best val total: {self.best_val_total:.8f})"
+        )
         return self.model
 
     # ------------------------------------------------------------------
@@ -473,7 +518,10 @@ class Trainer:
             'epoch': self.current_epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'best_val_loss': self.best_val_loss,
+            'selection_metric': self.selection_metric,
+            'best_val_mse': self.best_val_mse,
+            'best_val_total': self.best_val_total,
+            'best_epoch': self.best_epoch + 1,  # 1-indexed
             'config': self.config,
         }, path)
 

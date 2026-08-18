@@ -1,9 +1,13 @@
-# Experiment: Persistence (E0)
+# Experiment: Persistence (E0) — Axis I alias: I0
 # Channels (canonical indices): [0]
-# Loss components: rain
+# Loss components: rain (unused; Persistence is non-trainable)
+# Non-trainable lower bound. No checkpoint produced.
 data:
   h5_path: "ConvLSTM_Dataset_128.h5"
   seq_len: 11
+  split_path: "configs/splits_v1.yaml"
+  normalization_path: "configs/normalization_v1.json"
+  precip_vmax: 100.0
 
 model:
   name: "Persistence"
@@ -13,18 +17,24 @@ model:
 
 training:
   batch_size: 4
-  epochs: 100
+  epochs: 20
   learning_rate: 0.0001
   weight_decay: 0.0001
   lr_patience: 10
   early_stopping_patience: 10
   grad_clip_norm: 1.0
   seed: 42
+  use_amp: auto
+  checkpoint_selection_metric: rain_mse
 
 physics_loss:
+  enabled: true
+  lambda_smooth: 0.01
   lambda_extreme: 0.5
   extreme_threshold: 10.0
   components: [rain]
+  orographic:
+    enabled: false
 
 output:
   checkpoint_dir: "outputs/experiments/E0_persistence/models"

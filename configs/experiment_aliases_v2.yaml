@@ -1,0 +1,30 @@
+# Frozen alias registry — Research Design C (docs/MINIMAX_IMPLEMENTATION_SPEC.md §5).
+#
+# Single authoritative E -> I/P mapping. New Axis IDs are ALIASES of the
+# canonical legacy configs, never duplicated YAMLs, so a scientific config can
+# never diverge between axes.
+#
+#   I5 == P0  resolve to the SAME canonical config (E5_terrain_geometry) and the
+#             SAME checkpoint — one run, reused across both axes.
+#
+# P4 / P5 are BLOCKED_BY_ENVIRONMENTAL_WIND_DATA and must have NO runnable row.
+version: "2.0"
+
+aliases:
+  I0: E0_persistence
+  I1: E1_plain_convlstm
+  I2: E2_resconvlstm
+  I3: E3_resconvlstm_cma
+  I4: E4_static_terrain
+  I5: E5_terrain_geometry
+  P0: E5_terrain_geometry
+  P1: P1_resconvlstm_smooth
+  P2: E6_terrain_extreme
+  P3: P3_resconvlstm_smooth_extreme
+
+references:
+  B1: B1_trajgru
+
+blocked:
+  P4: BLOCKED_BY_ENVIRONMENTAL_WIND_DATA
+  P5: BLOCKED_BY_ENVIRONMENTAL_WIND_DATA

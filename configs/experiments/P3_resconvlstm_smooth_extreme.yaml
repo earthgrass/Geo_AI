@@ -1,8 +1,8 @@
-# Experiment: Static Terrain (E4) — Axis I alias: I4
-# Channels (canonical indices): [0, 1, 2, 3, 4, 5, 6, 7, 8, 11]
-# Loss components: rain
-# Adds DEM and land mask (10 channels) vs I3. The loader produces exactly 10
-# channels; the evaluator must NOT re-apply canonical indices to this tensor.
+# Experiment: ResConvLSTM + Smoothness + Extreme (P3) — Axis II
+# Channels (canonical indices): [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+# Loss components: rain, smooth, extreme
+# L_total = L_MSE + 0.01*L_smooth + 0.5*L_extreme (extreme threshold 10 mm/h,
+# strict >). Checkpoint selection is STILL validation base rain MSE.
 data:
   h5_path: "ConvLSTM_Dataset_128.h5"
   seq_len: 11
@@ -12,7 +12,7 @@ data:
 
 model:
   name: "ResConvLSTM"
-  input_channel_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 11]
+  input_channel_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
   hidden_dims: [64, 128]
   kernel_size: 3
 
@@ -33,10 +33,10 @@ physics_loss:
   lambda_smooth: 0.01
   lambda_extreme: 0.5
   extreme_threshold: 10.0
-  components: [rain]
+  components: [rain, smooth, extreme]
   orographic:
     enabled: false
 
 output:
-  checkpoint_dir: "outputs/experiments/E4_static_terrain/models"
-  log_dir: "outputs/experiments/E4_static_terrain/logs"
+  checkpoint_dir: "outputs/experiments/P3_resconvlstm_smooth_extreme/models"
+  log_dir: "outputs/experiments/P3_resconvlstm_smooth_extreme/logs"

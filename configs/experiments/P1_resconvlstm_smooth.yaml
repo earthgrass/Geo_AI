@@ -1,10 +1,8 @@
-# Experiment: TrajGRU baseline (B1)
-# Channels (canonical indices): [0]
-# Loss components: rain
-# Backbone reference only (NOT an Axis-I input contrast). TrajGRU is an
-# ABSOLUTE-output model: its forward applies a ReLU precipitation head, so the
-# Trainer and the evaluator must both consume the raw forward output — never
-# add P_prev again.
+# Experiment: ResConvLSTM + Smoothness (P1) — Axis II
+# Channels (canonical indices): [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+# Loss components: rain, smooth
+# L_total = L_MSE + 0.01 * L_smooth (spatial dy+dx + temporal |P_hat - P_prev|).
+# Checkpoint selection is STILL validation base rain MSE, never the composite.
 data:
   h5_path: "ConvLSTM_Dataset_128.h5"
   seq_len: 11
@@ -13,8 +11,8 @@ data:
   precip_vmax: 100.0
 
 model:
-  name: "TrajGRU"
-  input_channel_indices: [0]
+  name: "ResConvLSTM"
+  input_channel_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
   hidden_dims: [64, 128]
   kernel_size: 3
 
@@ -35,10 +33,10 @@ physics_loss:
   lambda_smooth: 0.01
   lambda_extreme: 0.5
   extreme_threshold: 10.0
-  components: [rain]
+  components: [rain, smooth]
   orographic:
     enabled: false
 
 output:
-  checkpoint_dir: "outputs/experiments/B1_trajgru/models"
-  log_dir: "outputs/experiments/B1_trajgru/logs"
+  checkpoint_dir: "outputs/experiments/P1_resconvlstm_smooth/models"
+  log_dir: "outputs/experiments/P1_resconvlstm_smooth/logs"

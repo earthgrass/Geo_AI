@@ -1,287 +1,268 @@
-"""Meteorological evaluation metrics for precipitation nowcasting.
+"""Evaluation Protocol V2 metrics (frozen: docs/EVALUATION_PROTOCOL_V2.md).
 
-Implements the full suite recommended by the PI-ResConvLSTM blueprint:
-    Continuous:  MAE, RMSE, SSIM, Peak Error, Storm Area Error, Center Displacement
-    Categorical: CSI, POD, FAR, HSS (at multiple precipitation thresholds)
-    Per-category: Accuracy by CMA precipitation intensity category
+Design rules enforced here:
 
-Reference:
-    Forecast verification methods: Wilks (2011) Statistical Methods in
-    the Atmospheric Sciences, 3rd ed.
+1. **Continuous metrics** are computed from sufficient statistics
+   (``sum_abs``, ``sum_sq``, pixel count ``n``). Global / event aggregation
+   pools these statistics FIRST and then computes MAE / RMSE once. Averaging
+   per-window ratios is never a primary score.
+
+2. **Categorical metrics** pool integer contingency counts (``a,b,c,d``) at the
+   relevant aggregation level and then compute CSI / POD / FAR / HSS / ACC /
+   BIAS once from the pooled counts. ``d`` (correct negatives) is always
+   returned so HSS and ACC are reconstructable.
+
+3. **Zero denominators return NaN** — never ``max(denominator, eps)`` forcing a
+   finite value.
+
+4. **SSIM** uses the frozen fixed ``data_range = 100 mm/h`` with a 7x7 uniform
+   window (``skimage.metrics.structural_similarity``). It is computed per window
+   and aggregated as an arithmetic mean; there is no pooled-image SSIM.
+
+5. Legacy per-window-range NRMSE and peak-relative error are NOT emitted by v2.
+   Only absolute peak error (mm/h) is retained as a diagnostic.
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
+
 from skimage.metrics import structural_similarity as ssim
 
-
 # ---------------------------------------------------------------------------
-# Constants
+# Frozen constants
 # ---------------------------------------------------------------------------
 
-CMA_CATEGORIES = {
-    'light':       (0.1, 2.0),
-    'moderate':    (2.0, 5.0),
-    'heavy':       (5.0, 10.0),
-    'torrential':  (10.0, 20.0),
-    'extreme':     (20.0, float('inf')),
-}
+# Primary categorical thresholds (mm/h), frozen before any test access.
+DEFAULT_THRESHOLDS = [5.0, 10.0, 20.0, 30.0]
 
-DEFAULT_THRESHOLDS = [1.0, 5.0, 10.0, 20.0, 50.0]  # mm/h
+# Frozen SSIM dynamic range (mm/h) — MUST NOT depend on per-window maxima.
+SSIM_DATA_RANGE = 100.0
+
+# Predictions below this (in normalized units) are treated as rounding noise.
+NEGATIVE_TOLERANCE = -1e-7
 
 
 # ---------------------------------------------------------------------------
-# Continuous metrics
+# Key formatting
 # ---------------------------------------------------------------------------
 
-def compute_continuous_metrics(
+def threshold_key(tau: float) -> str:
+    """Canonical threshold suffix, e.g. ``5.0 -> '5mmh'``, ``10.0 -> '10mmh'``.
+
+    Single source of truth for threshold-key formatting so the report writer
+    and the metric emitter can never disagree (e.g. ``CSI_10.0mmh`` vs
+    ``CSI_10mmh``).
+    """
+    if float(tau).is_integer():
+        return f"{int(tau)}mmh"
+    return f"{tau}mmh"
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+def validate_finite(P_hat: np.ndarray, P_true: np.ndarray) -> None:
+    """Raise on non-finite prediction/target arrays (evaluator error)."""
+    if not np.isfinite(P_hat).all():
+        raise ValueError("Non-finite prediction array encountered in evaluation.")
+    if not np.isfinite(P_true).all():
+        raise ValueError("Non-finite target array encountered in evaluation.")
+
+
+def clamp_negative_tiny(P_hat: np.ndarray) -> int:
+    """Clamp values in ``[NEGATIVE_TOLERANCE, 0)`` to zero (roundoff only).
+
+    Returns the number of clamped pixels so the caller can log it. Values below
+    ``NEGATIVE_TOLERANCE`` are NOT touched here; the evaluator fails on them
+    because the ReLU architecture should never produce them.
+    """
+    if not np.isfinite(P_hat).all():
+        raise ValueError("Non-finite prediction array encountered in evaluation.")
+    mask = (P_hat < 0) & (P_hat >= NEGATIVE_TOLERANCE)
+    n_clamped = int(mask.sum())
+    P_hat[mask] = 0.0
+    return n_clamped
+
+
+# ---------------------------------------------------------------------------
+# Continuous metrics (sufficient statistics)
+# ---------------------------------------------------------------------------
+
+def compute_continuous_suff_stats(
     P_hat: np.ndarray,
     P_true: np.ndarray,
-    pixel_area_km2: float = 100.0,
-    resolution_km: float = 10.0,
 ) -> Dict[str, float]:
-    """Compute continuous evaluation metrics.
+    """Return continuous sufficient statistics for one window (mm/h).
 
     Args:
-        P_hat: [H, W] predicted precipitation (mm/h).
-        P_true: [H, W] ground truth precipitation (mm/h).
-        pixel_area_km2: Area per pixel in km^2.
-        resolution_km: Grid resolution in km.
+        P_hat: [H, W] predicted precipitation in mm/h.
+        P_true: [H, W] observed precipitation in mm/h.
 
     Returns:
-        Dict of metric name -> value.
+        ``{"sum_abs": float, "sum_sq": float, "n": int}``.
     """
-    metrics = {}
-
-    # MAE and RMSE
-    diff = P_hat - P_true
-    metrics['MAE'] = float(np.mean(np.abs(diff)))
-    metrics['RMSE'] = float(np.sqrt(np.mean(diff ** 2)))
-
-    # Normalized RMSE
-    p_range = max(P_true.max() - P_true.min(), 1e-6)
-    metrics['NRMSE'] = metrics['RMSE'] / p_range
-
-    # SSIM
-    data_max = max(P_true.max(), P_hat.max(), 1e-6)
-    win_size = min(7, min(P_true.shape) // 2 * 2 + 1)
-    if win_size >= 3:
-        metrics['SSIM'] = float(ssim(
-            P_true / data_max, P_hat / data_max,
-            data_range=1.0, win_size=win_size,
-        ))
-    else:
-        metrics['SSIM'] = float('nan')
-
-    # Peak precipitation error
-    metrics['peak_error'] = float(np.abs(P_hat.max() - P_true.max()))
-    metrics['peak_rel_error'] = float(
-        metrics['peak_error'] / max(P_true.max(), 1e-6)
-    )
-
-    # Storm area error (area with precipitation > 1 mm/h)
-    storm_true = (P_true > 1.0).sum() * pixel_area_km2
-    storm_pred = (P_hat > 1.0).sum() * pixel_area_km2
-    metrics['storm_area_true_km2'] = float(storm_true)
-    metrics['storm_area_pred_km2'] = float(storm_pred)
-    metrics['storm_area_error_km2'] = float(np.abs(storm_pred - storm_true))
-    metrics['storm_area_rel_error'] = float(
-        np.abs(storm_pred - storm_true) / max(storm_true, 1.0)
-    )
-
-    # Center displacement
-    metrics['center_displacement_km'] = float(
-        _center_displacement(P_hat, P_true, resolution_km)
-    )
-
-    return metrics
-
-
-# ---------------------------------------------------------------------------
-# Categorical (dichotomous) metrics
-# ---------------------------------------------------------------------------
-
-def compute_categorical_metrics(
-    P_hat: np.ndarray,
-    P_true: np.ndarray,
-    threshold: float,
-) -> Dict[str, float]:
-    """Compute categorical metrics at a given precipitation threshold.
-
-    Contingency table (2x2):
-                   Predicted YES   Predicted NO
-        Observed YES       a              c
-        Observed NO        b              d
-
-    where:
-        a = hits (correct yes)
-        b = false alarms
-        c = misses
-        d = correct negatives
-
-    Metrics:
-        CSI = a / (a + b + c)           Threat Score / Critical Success Index
-        POD = a / (a + c)               Probability of Detection (hit rate)
-        FAR = b / (a + b)               False Alarm Ratio
-        HSS = 2(ad - bc) / [(a+c)(c+d) + (a+b)(b+d)]  Heidke Skill Score
-        ACC = (a + d) / n               Accuracy
-        BIAS = (a + b) / (a + c)        Frequency Bias
-
-    Args:
-        P_hat: [H, W] predicted precipitation.
-        P_true: [H, W] ground truth.
-        threshold: Precipitation threshold for yes/no.
-
-    Returns:
-        Dict of metric name -> value.
-    """
-    pred_yes = P_hat >= threshold
-    obs_yes = P_true >= threshold
-
-    a = float((pred_yes & obs_yes).sum())       # hits
-    b = float((pred_yes & ~obs_yes).sum())      # false alarms
-    c = float((~pred_yes & obs_yes).sum())      # misses
-    d = float((~pred_yes & ~obs_yes).sum())     # correct negatives
-    n = a + b + c + d
-
+    validate_finite(P_hat, P_true)
+    diff = P_hat.astype(np.float64) - P_true.astype(np.float64)
     return {
-        'CSI': a / max(a + b + c, 1.0),
-        'POD': a / max(a + c, 1.0),
-        'FAR': b / max(a + b, 1.0),
-        'HSS': (2.0 * (a * d - b * c)) / max(
-            (a + c) * (c + d) + (a + b) * (b + d), 1.0
-        ),
-        'ACC': (a + d) / max(n, 1.0),
-        'BIAS': (a + b) / max(a + c, 1.0),
-        'a_hits': a,
-        'b_false_alarms': b,
-        'c_misses': c,
+        "sum_abs": float(np.abs(diff).sum()),
+        "sum_sq": float((diff * diff).sum()),
+        "n": int(P_hat.size),
     }
 
 
-# ---------------------------------------------------------------------------
-# Per-category metrics
-# ---------------------------------------------------------------------------
+def continuous_from_suff(stats: Dict[str, float]) -> Dict[str, float]:
+    """Compute MAE / RMSE from pooled sufficient statistics."""
+    n = stats["n"]
+    if n <= 0:
+        return {"MAE": float("nan"), "RMSE": float("nan")}
+    mae = stats["sum_abs"] / n
+    rmse = float(np.sqrt(stats["sum_sq"] / n))
+    return {"MAE": float(mae), "RMSE": rmse}
 
-def compute_category_accuracy(
-    P_hat: np.ndarray,
-    P_true: np.ndarray,
-    categories: Dict[str, Tuple[float, float]] = None,
-) -> Dict[str, float]:
-    """Compute classification accuracy per CMA precipitation category.
 
-    For each category, what fraction of true pixels in that category
-    are correctly predicted to be in that category?
+def nrmse_fixed100(rmse_global: float, scale: float = SSIM_DATA_RANGE) -> float:
+    """Optional secondary diagnostic: ``RMSE_global / 100 mm/h``.
 
-    Args:
-        P_hat: [H, W] predicted precipitation.
-        P_true: [H, W] ground truth.
-        categories: Dict of name -> (lo, hi) mm/h thresholds.
-
-    Returns:
-        Dict of 'acc_{name}' -> value.
+    Protocol v2 §14: this is the ONLY permitted NRMSE form. It uses the frozen
+    normalization scale (100 mm/h) — never the per-window observed range — and
+    is never part of the primary v2 table.
     """
-    if categories is None:
-        categories = CMA_CATEGORIES
-
-    acc = {}
-    for name, (lo, hi) in categories.items():
-        mask_true = (P_true >= lo) & (P_true < hi)
-        mask_pred = (P_hat >= lo) & (P_hat < hi)
-        n_true = mask_true.sum()
-        if n_true > 0:
-            correct = (mask_true & mask_pred).sum()
-            acc[f'acc_{name}'] = float(correct / n_true)
-        else:
-            acc[f'acc_{name}'] = float('nan')
-
-    return acc
+    return float(rmse_global) / float(scale)
 
 
 # ---------------------------------------------------------------------------
-# Combined: all metrics
+# SSIM (fixed data range)
 # ---------------------------------------------------------------------------
 
-def compute_all_metrics(
+def compute_window_ssim(
     P_hat: np.ndarray,
     P_true: np.ndarray,
-    thresholds: List[float] = None,
-    pixel_area_km2: float = 100.0,
-    resolution_km: float = 10.0,
-) -> Dict[str, float]:
-    """Compute all evaluation metrics at once.
+    data_range: float = SSIM_DATA_RANGE,
+) -> float:
+    """Per-window SSIM with the frozen fixed range ``100 mm/h``.
 
     Args:
-        P_hat: [H, W] or [B, H, W] predicted precipitation.
-        P_true: [H, W] or [B, H, W] ground truth.
-        thresholds: Precipitation thresholds for categorical metrics.
-        pixel_area_km2: Area per pixel.
-        resolution_km: Grid resolution.
+        P_hat: [H, W] predicted precipitation in mm/h.
+        P_true: [H, W] observed precipitation in mm/h.
+        data_range: fixed dynamic range (mm/h). MUST be 100.0 for v2.
 
     Returns:
-        Dict of all metric names -> values.
+        Float SSIM value.
+    """
+    validate_finite(P_hat, P_true)
+    if data_range != SSIM_DATA_RANGE:
+        raise ValueError(
+            f"SSIM data_range must be fixed at {SSIM_DATA_RANGE} mm/h for v2, "
+            f"got {data_range}."
+        )
+    return float(ssim(
+        P_true, P_hat,
+        data_range=data_range,
+        win_size=7,
+        gaussian_weights=False,
+        use_sample_covariance=True,
+        channel_axis=None,
+        full=False,
+        K1=0.01,
+        K2=0.03,
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Categorical metrics (contingency counts first)
+# ---------------------------------------------------------------------------
+
+def compute_contingency_counts(
+    P_hat: np.ndarray,
+    P_true: np.ndarray,
+    threshold: float,
+) -> Dict[str, int]:
+    """Return integer contingency counts at one threshold (mm/h).
+
+    A threshold event is present when the value is >= `threshold`.
+
+    Returns:
+        ``{"a": hits, "b": false_alarms, "c": misses, "d": correct_negatives}``
+        all as Python ints.
+    """
+    validate_finite(P_hat, P_true)
+    pred_yes = P_hat >= threshold
+    obs_yes = P_true >= threshold
+    return {
+        "a": int((pred_yes & obs_yes).sum()),
+        "b": int((pred_yes & ~obs_yes).sum()),
+        "c": int((~pred_yes & obs_yes).sum()),
+        "d": int((~pred_yes & ~obs_yes).sum()),
+    }
+
+
+def categorical_from_counts(
+    a: int, b: int, c: int, d: int,
+) -> Dict[str, float]:
+    """Compute categorical scores from POOLED contingency counts.
+
+    Undefined ratios (zero denominator) return NaN. Counts are always included
+    so pooled HSS / ACC are auditable and reconstructable.
+    """
+    n = a + b + c + d
+    denom_csi = a + b + c
+    denom_pos = a + c              # observed positives
+    denom_far = a + b              # forecast positives
+    denom_hss = (a + c) * (c + d) + (a + b) * (b + d)
+
+    return {
+        "CSI": _safe_ratio(a, denom_csi),
+        "POD": _safe_ratio(a, denom_pos),
+        "FAR": _safe_ratio(b, denom_far),
+        "HSS": _safe_ratio(2.0 * (a * d - b * c), denom_hss),
+        "ACC": _safe_ratio(a + d, n),
+        "BIAS": _safe_ratio(a + b, denom_pos),
+        "a_hits": int(a),
+        "b_false_alarms": int(b),
+        "c_misses": int(c),
+        "d_correct_negatives": int(d),
+        "n_total": int(n),
+    }
+
+
+def _safe_ratio(num: float, den: float) -> float:
+    """Return num/den, or NaN when den == 0 (never a forced epsilon)."""
+    if den == 0:
+        return float("nan")
+    return float(num / den)
+
+
+# ---------------------------------------------------------------------------
+# Per-window convenience
+# ---------------------------------------------------------------------------
+
+def compute_window_diagnostics(
+    P_hat: np.ndarray,
+    P_true: np.ndarray,
+    thresholds: Optional[List[float]] = None,
+) -> Dict[str, object]:
+    """Compute the v2 per-window diagnostic record for one field (mm/h).
+
+    Returns a dict with continuous values, SSIM, absolute peak error, and the
+    raw contingency counts per threshold. This is the raw material the
+    evaluator accumulates; it does NOT aggregate anything.
     """
     if thresholds is None:
         thresholds = DEFAULT_THRESHOLDS
-
-    # Handle batched input
-    if P_hat.ndim == 3:
-        results = {}
-        all_metrics = [
-            compute_all_metrics(
-                P_hat[i], P_true[i], thresholds,
-                pixel_area_km2, resolution_km,
-            )
-            for i in range(P_hat.shape[0])
-        ]
-        for key in all_metrics[0]:
-            vals = [m[key] for m in all_metrics if not np.isnan(m.get(key, float('nan')))]
-            results[key] = float(np.mean(vals)) if vals else float('nan')
-        return results
-
-    # Single frame
-    metrics = {}
-
-    # Continuous
-    metrics.update(
-        compute_continuous_metrics(P_hat, P_true, pixel_area_km2, resolution_km)
+    cont = compute_continuous_suff_stats(P_hat, P_true)
+    out: Dict[str, object] = dict(cont)
+    out["SSIM"] = compute_window_ssim(P_hat, P_true)
+    out["peak_error"] = float(
+        np.abs(float(P_hat.max()) - float(P_true.max()))
     )
-
-    # Categorical (multiple thresholds)
-    for thresh in thresholds:
-        cat = compute_categorical_metrics(P_hat, P_true, thresh)
-        for k, v in cat.items():
-            metrics[f'{k}_{thresh:.0f}mmh'] = v
-
-    # Per-category accuracy
-    metrics.update(compute_category_accuracy(P_hat, P_true))
-
-    return metrics
-
-
-# ---------------------------------------------------------------------------
-# Helper: center displacement
-# ---------------------------------------------------------------------------
-
-def _center_displacement(
-    P_hat: np.ndarray,
-    P_true: np.ndarray,
-    resolution_km: float,
-) -> float:
-    """Compute distance between precipitation centroids."""
-    h, w = P_hat.shape
-    y, x = np.mgrid[0:h, 0:w]
-
-    mass_true = P_true.sum()
-    mass_pred = P_hat.sum()
-
-    if mass_true < 1e-6 or mass_pred < 1e-6:
-        return float('nan')
-
-    cx_true = (x * P_true).sum() / mass_true
-    cy_true = (y * P_true).sum() / mass_true
-    cx_pred = (x * P_hat).sum() / mass_pred
-    cy_pred = (y * P_hat).sum() / mass_pred
-
-    dist_pix = np.sqrt((cx_pred - cx_true) ** 2 + (cy_pred - cy_true) ** 2)
-    return dist_pix * resolution_km
+    # Field maxima in mm/h — needed for event/split-level absolute peak error
+    # ``|max_{w,p} f - max_{w,p} y|`` (protocol v2 §15).
+    out["f_max"] = float(P_hat.max())
+    out["y_max"] = float(P_true.max())
+    counts = {
+        threshold_key(tau): compute_contingency_counts(P_hat, P_true, tau)
+        for tau in thresholds
+    }
+    out["counts"] = counts
+    return out
