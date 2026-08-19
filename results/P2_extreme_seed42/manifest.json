@@ -1,0 +1,48 @@
+{
+  "experiment": "E6_terrain_extreme",
+  "aliases": [
+    "P2"
+  ],
+  "mode": "train",
+  "model": "ResConvLSTM",
+  "seed": 42,
+  "batch_size": 4,
+  "epochs": 20,
+  "device": "cuda",
+  "amp_resolved": true,
+  "n_params": 1181058,
+  "git_commit": "1391b2d2149eb2445cc0872707320817768e36cc",
+  "git_dirty": true,
+  "config_path": "configs/experiments/E6_terrain_extreme.yaml",
+  "config_sha256": "9ecb16dba0e6d5a0a4307a3e946b82ac980540e64d0b75fc9b744318f1018940",
+  "dataset_sha256": "bb83be4616f1f3a9399f98107bbc7d7c6cd4fc5bdaf33f27fb847703241c02ea",
+  "split_sha256": "e46cb948ecaf303910882b26a770e3ee15765e62fcfb995a003d48696d7f4a9e",
+  "normalization_sha256": "92a553f6bd6fd3770e346afb590759fc7ddf5a5c245fef800c5005df6b47cd8e",
+  "checkpoint_path": "outputs/experiments/E6_terrain_extreme/models/ResConvLSTM_best.pth",
+  "checkpoint_sha256": "d277444b03f34aac366108008a0e181f4b1c5d4a7dc3f76af1877d998207982f",
+  "selection_metric": "rain_mse",
+  "best_epoch": 3,
+  "best_val_mse": 0.00028462892481830244,
+  "input_channel_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "loss_components": [
+    "rain",
+    "extreme"
+  ],
+  "protocol_id": "evaluation_v2",
+  "test_status": "SEALED",
+  "smoke": false,
+  "runtime_seconds": 980.8134915828705
+}

@@ -1,0 +1,34 @@
+{
+  "experiment": "B1_trajgru",
+  "aliases": [],
+  "mode": "train",
+  "model": "TrajGRU",
+  "seed": 42,
+  "batch_size": 4,
+  "epochs": 20,
+  "device": "cuda",
+  "amp_resolved": true,
+  "n_params": 863863,
+  "git_commit": "1391b2d2149eb2445cc0872707320817768e36cc",
+  "git_dirty": true,
+  "config_path": "configs/experiments/B1_trajgru.yaml",
+  "config_sha256": "fd3cad486d51cda30ecff1cc24d1fcfd29074194cb0c5e5738d590873be750c7",
+  "dataset_sha256": "bb83be4616f1f3a9399f98107bbc7d7c6cd4fc5bdaf33f27fb847703241c02ea",
+  "split_sha256": "e46cb948ecaf303910882b26a770e3ee15765e62fcfb995a003d48696d7f4a9e",
+  "normalization_sha256": "92a553f6bd6fd3770e346afb590759fc7ddf5a5c245fef800c5005df6b47cd8e",
+  "checkpoint_path": "outputs/experiments/B1_trajgru/models/TrajGRU_best.pth",
+  "checkpoint_sha256": "a6868b9987638a6ce87d138eadbec5eb8af718b58ab31ce0a587e31923dd14ec",
+  "selection_metric": "rain_mse",
+  "best_epoch": 5,
+  "best_val_mse": 0.0002403633089551366,
+  "input_channel_indices": [
+    0
+  ],
+  "loss_components": [
+    "rain"
+  ],
+  "protocol_id": "evaluation_v2",
+  "test_status": "SEALED",
+  "smoke": false,
+  "runtime_seconds": 1378.099483013153
+}

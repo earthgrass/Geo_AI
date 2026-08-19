@@ -151,11 +151,13 @@ windows (2022) · **test 4 events / 707 windows (2023–2024)** — sealed.
 | Evaluator v2 / runner / trainer | `ea50b08` |
 | TrajGRU device-portability test | `1391b2d` |
 | Research-analysis infra (this branch) | `research-analysis-infra` (Draft PR; not merged) |
-| **VALIDATION MATRIX** | **IN PROGRESS** — scripts ready, awaiting GPU artifacts |
-| GPU training gate | **CLOSED** — opens after E2/I2 v2 re-evaluation completes on the GPU host |
-| Test status | **SEALED** |
-| Validation test suite | 145 / 145 passing |
-| 5090 paper-experiments rerun | running (`scripts/run_paper_experiments.py`) |
+| **VALIDATION MATRIX** | **COMPLETE (single seed = 42)** — 10 canonical experiments, 11 source artifacts (I2 deduped), see `deliverables/REAL_GPU_RESULT_AUDIT.md` |
+| **MULTI-SEED** | **NOT YET CONFIRMED** — 5-seed plan in audit §N; gate for any inferential paper claim |
+| GPU training gate | **OPEN** (validation closed; multi-seed pending) |
+| Test status | **SEALED** — `FINAL_TEST_STATUS = NOT_AUTHORIZED`; no test split evaluation has occurred |
+| Validation test suite | 170 / 170 passing (145 legacy + 25 real-GPU integration) |
+| Real-GPU artifact integration | `PASS` — 10 canonical from 11 sources; I2 dedup verified; I5 ≡ P0 verified |
+| 5090 paper-experiments rerun | completed (`scripts/run_paper_experiments.py`); results archived to `results/` |
 
 ## License
 

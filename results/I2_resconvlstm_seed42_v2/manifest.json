@@ -1,0 +1,36 @@
+{
+  "experiment": "E2_resconvlstm",
+  "aliases": [
+    "I2"
+  ],
+  "mode": "validate-only",
+  "model": "ResConvLSTM",
+  "seed": 42,
+  "batch_size": 4,
+  "epochs": 20,
+  "device": "cuda",
+  "amp_resolved": true,
+  "n_params": 1155714,
+  "git_commit": "1391b2d2149eb2445cc0872707320817768e36cc",
+  "git_dirty": true,
+  "config_path": "configs/experiments/E2_resconvlstm.yaml",
+  "config_sha256": "59a1dee37a1cd2afb1e4210b4099ccba4f41c16c9e39ffd0cd7d8df11143c222",
+  "dataset_sha256": "bb83be4616f1f3a9399f98107bbc7d7c6cd4fc5bdaf33f27fb847703241c02ea",
+  "split_sha256": "e46cb948ecaf303910882b26a770e3ee15765e62fcfb995a003d48696d7f4a9e",
+  "normalization_sha256": "92a553f6bd6fd3770e346afb590759fc7ddf5a5c245fef800c5005df6b47cd8e",
+  "checkpoint_path": "/root/autodl-tmp/Geo_AI/saved_models/E2_resconvlstm_seed42/E2_resconvlstm_seed42_best.pth",
+  "checkpoint_sha256": "3263e135ba8312da7fd4451c261936cb4189c56a2b496d57ac62c1e968d51934",
+  "selection_metric": "rain_mse",
+  "best_epoch": null,
+  "best_val_mse": 0.00015986856626067596,
+  "input_channel_indices": [
+    0
+  ],
+  "loss_components": [
+    "rain"
+  ],
+  "protocol_id": "evaluation_v2",
+  "test_status": "SEALED",
+  "smoke": false,
+  "runtime_seconds": 10.073662519454956
+}

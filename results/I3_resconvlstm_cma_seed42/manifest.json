@@ -1,0 +1,43 @@
+{
+  "experiment": "E3_resconvlstm_cma",
+  "aliases": [
+    "I3"
+  ],
+  "mode": "train",
+  "model": "ResConvLSTM",
+  "seed": 42,
+  "batch_size": 4,
+  "epochs": 20,
+  "device": "cuda",
+  "amp_resolved": true,
+  "n_params": 1171842,
+  "git_commit": "1391b2d2149eb2445cc0872707320817768e36cc",
+  "git_dirty": true,
+  "config_path": "configs/experiments/E3_resconvlstm_cma.yaml",
+  "config_sha256": "292458cab77005bbdd3f76f6396f0d8ec4e0ee746a1673e869881265534ec807",
+  "dataset_sha256": "bb83be4616f1f3a9399f98107bbc7d7c6cd4fc5bdaf33f27fb847703241c02ea",
+  "split_sha256": "e46cb948ecaf303910882b26a770e3ee15765e62fcfb995a003d48696d7f4a9e",
+  "normalization_sha256": "92a553f6bd6fd3770e346afb590759fc7ddf5a5c245fef800c5005df6b47cd8e",
+  "checkpoint_path": "outputs/experiments/E3_resconvlstm_cma/models/ResConvLSTM_best.pth",
+  "checkpoint_sha256": "c03e77bb5138c8cc35a200a8135873c06a6cef434f276ac0a2477868e1c494be",
+  "selection_metric": "rain_mse",
+  "best_epoch": 20,
+  "best_val_mse": 0.00015548864633124779,
+  "input_channel_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "loss_components": [
+    "rain"
+  ],
+  "protocol_id": "evaluation_v2",
+  "test_status": "SEALED",
+  "smoke": false,
+  "runtime_seconds": 1433.8866770267487
+}

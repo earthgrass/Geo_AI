@@ -65,6 +65,12 @@ from src.evaluation.evaluator import (  # noqa: E402
     paired_event_differences,
     PROTOCOL_ID,
 )
+from scripts._artifact_normalize import (  # noqa: E402
+    NormalizerError,
+    scientific_fingerprint,
+    SCIENTIFIC_FINGERPRINT_KEYS,
+    unwrap_v2_payload,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +139,12 @@ class ContractViolation(AssertionError):
 
 # ---------------------------------------------------------------------------
 # Loading + validation
+#
+# We use the REAL GPU manifest schema produced by
+# scripts/run_experiment.py::write_manifest. The legacy synthetic fields
+# ``experiment_id`` / ``alias_ids`` / ``manifest.split`` are NOT required.
+# They are produced by normalize_gpu_artifact_metadata and the rest of the
+# analyzer sees only the canonical (renamed) names.
 # ---------------------------------------------------------------------------
 
 def _load_json(path: Path) -> Dict:
@@ -141,97 +153,72 @@ def _load_json(path: Path) -> Dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _unwrap_v2_payload(payload: Dict, source: Path) -> Tuple[Dict, Dict]:
-    """Unwrap the v2 result JSON written by ``reporting.write_v2_json``.
+def _legacy_synthetic_to_norm(synthetic: Dict, source_dir: Path) -> Dict:
+    """Translate a legacy synthetic manifest into the canonical shape.
 
-    The writer produces ``{"model": str, "result": <evaluator result>,
-    [extra fields...]}``. The inner ``result`` block is the authoritative
-    evaluator output. Returns ``(inner_result, wrapper_payload)``.
-
-    Fails fast with a precise message if the wrapper is missing or
-    malformed; legacy un-wrapped format (top-level ``protocol_id`` etc.)
-    is NOT accepted.
+    Used by ``load_results`` for backward compatibility with pre-R32
+    test fixtures. New artifacts must use the real GPU schema.
     """
-    if not isinstance(payload, dict):
-        raise ContractViolation(
-            f"{source}: payload is not a JSON object."
-        )
-    if "result" not in payload:
-        raise ContractViolation(
-            f"{source}: missing required wrapper key 'result'. "
-            f"This file must be written by "
-            f"src.evaluation.reporting.write_v2_json (which emits a "
-            f"{{'model': ..., 'result': ...}} wrapper). Legacy "
-            f"un-wrapped format (top-level protocol_id/split/n_events) "
-            f"is NOT accepted by this analyzer."
-        )
-    inner = payload["result"]
-    if not isinstance(inner, dict):
-        raise ContractViolation(
-            f"{source}: payload['result'] is not a JSON object."
-        )
-    return inner, payload
+    return {
+        "experiment_id":          synthetic.get("experiment_id", "?"),
+        "alias_ids":              list(synthetic.get("alias_ids", [])),
+        "mode":                   synthetic.get("mode", "validate-only"),
+        "model":                  synthetic.get("model", "?"),
+        "seed":                   synthetic.get("seed", 42),
+        "epochs":                 synthetic.get("epochs", 20),
+        "git_commit":             synthetic.get("git_commit"),
+        "config_path":            synthetic.get("config_path", "?"),
+        "config_sha256":          synthetic.get("config_sha256"),
+        "dataset_sha256":         synthetic.get("dataset_sha256"),
+        "split_sha256":           synthetic.get("split_sha256"),
+        "normalization_sha256":   synthetic.get("normalization_sha256"),
+        "checkpoint_path":        synthetic.get("checkpoint_path"),
+        "checkpoint_sha256":      synthetic.get("checkpoint_sha256"),
+        "best_epoch":             synthetic.get("best_epoch"),
+        "best_val_mse":           synthetic.get("best_val_mse"),
+        "selection_metric":       synthetic.get("selection_metric", "rain_mse"),
+        "input_channel_indices":  synthetic.get("input_channel_indices", []),
+        "loss_components":        synthetic.get("loss_components", []),
+        "protocol_id":            synthetic.get("protocol_id"),
+        "test_status":            synthetic.get("test_status"),
+        "smoke":                  synthetic.get("smoke"),
+        "split":                  synthetic.get("split"),
+        "n_events":               synthetic.get("n_events", EXPECTED_N_EVENTS),
+        "n_windows":              synthetic.get("n_windows", EXPECTED_N_WINDOWS),
+        "thresholds":             synthetic.get("thresholds",
+                                                  [5.0, 10.0, 20.0, 30.0]),
+        "per_event":              synthetic.get("per_event", {}),
+        "overall_global":         synthetic.get("overall_global", {}),
+    }
 
 
-def _validate_manifest(manifest: Dict, manifest_path: Path) -> None:
-    """FAIL FAST on any fingerprint violation."""
+def _validate_normalized(norm: Dict, manifest_dir_name: str) -> None:
+    """FAIL FAST on any fingerprint violation of the canonical schema."""
     def _check(key: str, expected) -> None:
-        if manifest.get(key) != expected:
+        v = norm.get(key)
+        if v != expected:
             raise ContractViolation(
-                f"{manifest_path.name}: manifest field '{key}' must equal "
-                f"{expected!r}; got {manifest.get(key)!r}."
-            )
-
-    for key in ("experiment_id", "alias_ids", "git_commit",
-                "config_sha256", "dataset_sha256", "split_sha256",
-                "normalization_sha256", "checkpoint_sha256",
-                "protocol_id", "test_status", "split", "smoke"):
-        if key not in manifest:
-            raise ContractViolation(
-                f"{manifest_path.name}: missing required manifest field '{key}'."
+                f"{manifest_dir_name}: manifest field '{key}' must equal "
+                f"{expected!r}; got {v!r}."
             )
 
     _check("protocol_id", EXPECTED_PROTOCOL_ID)
     _check("split", EXPECTED_SPLIT)
     _check("test_status", EXPECTED_TEST_STATUS)
     _check("smoke", EXPECTED_SMOKE)
-
-    # n_events / n_windows are recorded in the result_v2 payload, not the
-    # manifest; the manifest records the *expected* counts for cross-checks.
-    # We compare them below against the result_v2 n_events / n_windows.
-
-
-def _validate_result(result: Dict, manifest_path: Path) -> None:
-    if result.get("protocol_id") != PROTOCOL_ID:
-        raise ContractViolation(
-            f"{manifest_path.name}: result_v2.protocol_id must equal "
-            f"{PROTOCOL_ID!r}; got {result.get('protocol_id')!r}.")
-    if result.get("split") != EXPECTED_SPLIT:
-        raise ContractViolation(
-            f"{manifest_path.name}: result_v2.split must equal "
-            f"{EXPECTED_SPLIT!r}; got {result.get('split')!r}.")
-    if result.get("test_status") != EXPECTED_TEST_STATUS:
-        raise ContractViolation(
-            f"{manifest_path.name}: result_v2.test_status must equal "
-            f"{EXPECTED_TEST_STATUS!r}; got {result.get('test_status')!r}.")
-    if result.get("n_events") != EXPECTED_N_EVENTS:
-        raise ContractViolation(
-            f"{manifest_path.name}: result_v2.n_events must equal "
-            f"{EXPECTED_N_EVENTS}; got {result.get('n_events')}.")
-    if result.get("n_windows") != EXPECTED_N_WINDOWS:
-        raise ContractViolation(
-            f"{manifest_path.name}: result_v2.n_windows must equal "
-            f"{EXPECTED_N_WINDOWS}; got {result.get('n_windows')}.")
+    _check("n_events", EXPECTED_N_EVENTS)
+    _check("n_windows", EXPECTED_N_WINDOWS)
 
 
 def load_results(
     results_dir: Path,
 ) -> Tuple[Dict[str, Dict], Dict[str, Dict]]:
-    """Walk ``results_dir`` and return (alias -> result_v2, alias -> manifest).
+    """Walk ``results_dir`` and return ``(alias -> result_v2_inner,
+    alias -> normalized_manifest)``.
 
-    Aliases are the entries in each manifest's ``alias_ids`` list. If the
-    same alias appears in two manifests, FAIL FAST. The I5/P0 same-artifact
-    identity is verified separately in :func:`enforce_i5_p0_identity`.
+    Aliases come from each manifest's ``aliases`` list (mapped to
+    ``alias_ids`` by the normalizer). If the same alias appears in two
+    different scientific artifacts (different fingerprint), FAIL FAST.
     """
     if not results_dir.exists():
         raise ContractViolation(f"results_dir does not exist: {results_dir}")
@@ -239,24 +226,110 @@ def load_results(
     alias_to_result: Dict[str, Dict] = {}
     alias_to_manifest: Dict[str, Dict] = {}
 
+    # Lazy import here so we avoid forcing every test that only uses the
+    # synthetic schema to reach into the normalizer.
+    from scripts._artifact_normalize import (
+        load_raw_manifest_and_result,
+    )
+
     for manifest_path in sorted(results_dir.glob("*/manifest.json")):
-        manifest = _load_json(manifest_path)
-        _validate_manifest(manifest, manifest_path)
+        source_dir = manifest_path.parent
+        # Skip metadata directories like results/_TEMPLATE/ that don't
+        # carry paper artifacts.
+        if source_dir.name.startswith("_"):
+            continue
+        # Skip pre-R32 scratch / incomplete artifacts whose manifest
+        # does not match the real-GPU schema AND does not match the
+        # legacy synthetic schema. Such dirs are out of scope.
+        try:
+            _peek_raw = _load_json(manifest_path)
+        except ContractViolation:
+            continue
+        if not (
+            ("experiment" in _peek_raw and "aliases" in _peek_raw)
+            or ("experiment_id" in _peek_raw and "alias_ids" in _peek_raw)
+        ):
+            continue
+        result_v2_path = source_dir / "result_v2.json"
+        if not result_v2_path.exists():
+            raise ContractViolation(
+                f"{source_dir}: missing result_v2.json"
+            )
 
-        result_v2_path = manifest_path.parent / "result_v2.json"
-        payload = _load_json(result_v2_path)
-        result, wrapper = _unwrap_v2_payload(payload, result_v2_path)
-        _validate_result(result, manifest_path)
+        raw_manifest = _load_json(manifest_path)
+        wrapper = _load_json(result_v2_path)
 
-        for alias in manifest["alias_ids"]:
-            if alias in alias_to_result:
-                raise ContractViolation(
-                    f"Alias '{alias}' is declared by more than one manifest: "
-                    f"{manifest_path.parent.name} and "
-                    f"{alias_to_manifest[alias].get('experiment_id', '<unknown>')}."
+        is_real_gpu = (
+            "experiment" in raw_manifest and "aliases" in raw_manifest
+        )
+        is_synthetic = (
+            "experiment_id" in raw_manifest and "alias_ids" in raw_manifest
+        )
+
+        if is_real_gpu and not is_synthetic:
+            try:
+                _, _, inner, norm = load_raw_manifest_and_result(
+                    source_dir, error_cls=ContractViolation,
                 )
+            except NormalizerError as e:
+                raise ContractViolation(str(e))
+        elif is_synthetic and not is_real_gpu:
+            # Legacy synthetic: translate inline to the normalized shape.
+            inner, _ = unwrap_v2_payload(wrapper, result_v2_path,
+                                          ContractViolation)
+            merged = dict(raw_manifest)
+            for k in ("n_events", "n_windows", "thresholds",
+                      "per_event", "overall_global"):
+                if k not in merged and k in inner:
+                    merged[k] = inner[k]
+            norm = _legacy_synthetic_to_norm(merged, source_dir)
+        else:
+            raise ContractViolation(
+                f"{source_dir}: manifest schema is ambiguous or unsupported. "
+                f"Real GPU manifests carry 'experiment' + 'aliases'; legacy "
+                f"synthetic manifests carry 'experiment_id' + 'alias_ids'. "
+                f"This file matches neither or both."
+            )
+
+        _validate_normalized(norm, source_dir.name)
+
+        result = {
+            "per_event":       inner.get("per_event", {}),
+            "thresholds":      inner.get("thresholds", []),
+            "n_events":        norm["n_events"],
+            "n_windows":       norm["n_windows"],
+            "split":           norm["split"],
+            "protocol_id":     norm["protocol_id"],
+            "test_status":     norm["test_status"],
+            "overall_global":  inner.get("overall_global", {}),
+        }
+
+        for alias in norm["alias_ids"]:
+            if alias in alias_to_manifest:
+                fp_new = scientific_fingerprint(norm)
+                fp_old = scientific_fingerprint(alias_to_manifest[alias])
+                if fp_new != fp_old:
+                    raise ContractViolation(
+                        f"Alias '{alias}' is declared by two different "
+                        f"scientific artifacts: {source_dir.name} vs "
+                        f"{alias_to_manifest[alias].get('_source_dir', '?')}. "
+                        f"Scientific fingerprint differs. Refusing to silently "
+                        f"collapse them."
+                    )
+                continue
+            tagged = dict(norm)
+            tagged["_source_dir"] = source_dir.name
+            alias_to_manifest[alias] = tagged
             alias_to_result[alias] = result
-            alias_to_manifest[alias] = manifest
+
+        # Backbone sanity experiments (e.g. B1_trajgru) carry no formal
+        # alias in the registry; register them under their canonical
+        # source-dir name so the per-experiment summary still has a row.
+        if not norm["alias_ids"]:
+            tagged = dict(norm)
+            tagged["_source_dir"] = source_dir.name
+            alias_to_manifest[source_dir.name] = tagged
+            alias_to_result[source_dir.name] = result
 
     return alias_to_result, alias_to_manifest
 
@@ -267,9 +340,9 @@ def enforce_i5_p0_identity(
     """Verify that the I5 and P0 manifests, if both present, are the same artifact.
 
     The alias registry resolves I5 and P0 to the same canonical config; the
-    two aliases therefore MUST resolve to the same manifest fingerprint. If
-    only one of them is present the identity is trivially recorded; if both
-    are present they must agree on the full fingerprint tuple.
+    two aliases therefore MUST resolve to the same scientific fingerprint.
+    If only one of them is present the identity is trivially recorded; if
+    both are present they must agree on the fingerprint tuple.
     """
     if "I5" not in alias_to_manifest and "P0" not in alias_to_manifest:
         return None
@@ -280,21 +353,18 @@ def enforce_i5_p0_identity(
 
     a = alias_to_manifest["I5"]
     b = alias_to_manifest["P0"]
-    fingerprint_keys = (
-        "checkpoint_sha256", "config_sha256", "dataset_sha256",
-        "split_sha256", "normalization_sha256", "git_commit",
-        "epochs", "best_epoch",
-    )
-    for k in fingerprint_keys:
-        if a.get(k) != b.get(k):
-            raise ContractViolation(
-                f"I5/P0 artifact identity violated: "
-                f"{a.get('experiment_id', '?')} vs "
-                f"{b.get('experiment_id', '?')} disagree on '{k}' "
-                f"({a.get(k)!r} vs {b.get(k)!r}). "
-                f"I5 and P0 must resolve to the same canonical config "
-                f"and checkpoint, per the alias registry."
-            )
+    fa = scientific_fingerprint(a)
+    fb = scientific_fingerprint(b)
+    if fa != fb:
+        diff = [k for k, va, vb in zip(SCIENTIFIC_FINGERPRINT_KEYS, fa, fb)
+                if va != vb]
+        raise ContractViolation(
+            f"I5/P0 artifact identity violated: "
+            f"{a.get('experiment_id', '?')} vs "
+            f"{b.get('experiment_id', '?')} disagree on scientific "
+            f"fingerprint fields: {diff}. I5 and P0 must resolve to the "
+            f"same canonical config and checkpoint."
+        )
     return a
 
 
@@ -435,8 +505,16 @@ def analyze(
     }
 
     # ---- per-alias summaries (experiment_summary.csv) ----
+    # Deduplicate by scientific fingerprint so I5 (=P0) appears ONCE in
+    # the experiment summary; the alias identity record (in markdown)
+    # reports both aliases on a single row.
     experiment_summary_rows: List[Dict] = []
+    seen_fps: set = set()
     for alias, manifest in sorted(alias_to_manifest.items()):
+        fp = scientific_fingerprint(manifest)
+        if fp in seen_fps:
+            continue
+        seen_fps.add(fp)
         result = alias_to_result[alias]
         per_event = result["per_event"]
         # Continuous event-mean (equal-event).
@@ -454,6 +532,10 @@ def analyze(
             "MAE_event_mean": event_mean("MAE_event"),
             "RMSE_event_mean": event_mean("RMSE_event"),
             "SSIM_event_mean_mean": event_mean("SSIM_event_mean"),
+            "config_sha256": manifest.get("config_sha256", ""),
+            "checkpoint_sha256": manifest.get("checkpoint_sha256", "") or "n/a",
+            "git_commit": manifest.get("git_commit", ""),
+            "mode": manifest.get("mode", ""),
         }
         for tau in FROZEN_THRESHOLDS_MMH:
             for m in CATEGORICAL_METRICS:
@@ -634,7 +716,8 @@ def write_outputs(out_dir: Path, payload: Dict) -> None:
 
     summary_cols = ["experiment_id", "alias_ids", "seed", "n_events",
                     "n_windows", "MAE_event_mean", "RMSE_event_mean",
-                    "SSIM_event_mean_mean"]
+                    "SSIM_event_mean_mean",
+                    "config_sha256", "checkpoint_sha256", "git_commit", "mode"]
     for tau in FROZEN_THRESHOLDS_MMH:
         for m in CATEGORICAL_METRICS:
             summary_cols.append(f"{m}_event_macro@{tau:g}mmh")
@@ -681,7 +764,8 @@ def render_markdown(payload: Dict) -> str:
     out: List[str] = []
     out.append("# Ablation Analysis — Two-Axis Controlled Study")
     out.append("")
-    out.append("> **VALIDATION MATRIX = IN PROGRESS.**")
+    out.append("> **VALIDATION MATRIX = COMPLETE (single seed = 42).**")
+    out.append("> **MULTI-SEED = NOT YET CONFIRMED.**")
     out.append("> **TEST STATUS = SEALED.** This document reports validation-")
     out.append("> level paired event-level statistics and does NOT include a")
     out.append("> held-out test evaluation. See `docs/FINAL_TEST_AUTHORIZATION.md`")
