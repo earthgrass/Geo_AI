@@ -1,150 +1,168 @@
-# PI-ResConvLSTM: Physics-informed Residual ConvLSTM for Typhoon Precipitation Nowcasting
+# GeoAI — Tropical-Cyclone Precipitation Nowcasting via Two-Axis Controlled Ablation
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org)
+[![Validation Test Status](https://img.shields.io/badge/pytest-69%2F69%20passed-brightgreen.svg)](tests/)
+[![Test Status](https://img.shields.io/badge/TEST--STATUS-SEALED-red.svg)](docs/PRE_FINAL_TEST_FREEZE.md)
 
-**PI-ResConvLSTM** is a deep-learning framework for spatiotemporal typhoon precipitation nowcasting. It integrates a residual ConvLSTM encoder with an (opt-in) physics-informed loss.
-
-Built on **First Prize** work at the **Beijing Intercollegiate Mathematical Modeling Competition (2026)**, and refactored for reproducibility and scientific rigor.
-
----
-
-## Project Status
-
-This repository distinguishes **what is implemented** from **what has been experimentally validated**. Be explicit about this split in any paper or report you derive from this code.
-
-### ✅ Implemented (code exists, runs structurally)
-
-- Model code: `PIResConvLSTM`, `ResConvLSTM`, `PlainConvLSTM`, `PersistenceBaseline` (`src/models/`)
-- Meteorological metric suite: MAE, RMSE, SSIM, CSI, POD, FAR, HSS, peak/area/center error (`src/evaluation/metrics.py`)
-- Leakage-safe dataset loader: year-based and event-based splitting with fail-fast metadata validation (`src/data/dataset.py`, `src/data/splits.py`)
-- 12-channel paper dataset builder (`scripts/build_paper_dataset.py`) + validator (`scripts/validate_paper_dataset.py`)
-- Experiment framework: trainer, config-driven physics loss, YAML configs, seed control (`src/training/`)
-
-### ⏳ Pending validation (NOT yet established)
-
-- Benchmark results (baseline comparisons have **not** been run against the 12-channel dataset)
-- Whether terrain-aware physics guidance improves nowcasting
-- Whether physics guidance helps heavy rainfall or terrain-forced precipitation
-- Final ablation results
-
-> **Do not** cite any numbers below as validated paper results — they are legacy competition artifacts.
+A research codebase for **30-minute tropical-cyclone precipitation nowcasting**
+built on leakage-safe streaming data, an evaluator-v2 protocol, and a
+**two-axis controlled ablation** design. Physics-informed inductive biases
+are an **optional extension**, not the paper's spine.
 
 ---
 
-## Research Question
+## What this repository is
 
-> Can terrain-aware physics guidance improve ConvLSTM-based typhoon precipitation nowcasting, and are the benefits particularly pronounced for heavy rainfall and terrain-forced precipitation?
+A reproducibility-first implementation of `Research Design C` — a frozen,
+pre-registered validation matrix that isolates the marginal value of storm-
+state information, static terrain, terrain geometry, smoothness regularization,
+and extreme-rain emphasis. The contribution is **controlled empirical
+evidence**, not a novel architecture. Architectural choices are *the fixed
+backbone* (Residual ConvLSTM with `[64, 128]` hidden dims); scientific
+content lives in the ablations.
 
-This is an **open hypothesis** — the experiments have not yet been run. The hypothesis is kept separate from any conclusion.
+> The current paper framing is **not** "Physics-Informed Residual ConvLSTM
+> outperforms baselines." It is "Does terrain information help 30-min TC
+> nowcasting? Does heavy-rain emphasis help retention of high CSI? — measured
+> under a sealed test, with paired event-level bootstrap 95% CIs."
 
----
+## What the two axes are
 
-## Model Architecture
+**Axis I — Input information ablation** (frozen single backbone):
 
 ```
-Input: [B, K=11, C=12, H=128, W=128]
-        │
-        ▼
-  ┌──────────────────────────┐
-  │  ConvLSTM Encoder #1     │  hidden=64
-  │  ConvLSTM Encoder #2     │  hidden=128
-  │  [Channel Attention]     │  optional SE Block
-  └────────────┬─────────────┘
-               │  h_deep [B, 128, H, W]
-               ▼
-  Decoder → pred_head  →  p_base
-  RefineNet(h_deep, p_base) → ΔP
-               │
-               ▼
-     P_hat = ReLU(P_last + ΔP)
+I0  Persistence                 [precip only]   ─── lower bound
+I1  PlainConvLSTM                [precip only]   ─── plain recurrent baseline
+I2  ResConvLSTM                  [precip only]   ─── residual-backbone control  (reuses E2 checkpoint)
+I3  ResConvLSTM + storm-state    [+ 7 channels]  ─── adds CMA storm-state / motion
+I4  ResConvLSTM + static terrain [+ 2 channels]  ─── adds DEM + land mask
+I5  ResConvLSTM + terrain grad   [+ 2 channels]  ─── adds dh/dx + dh/dy  (= P0)
 ```
 
-Temporal residual learning: the model predicts the precipitation **change** ΔP, and the caller computes `P_hat = ReLU(P_last + ΔP)`.
-
----
-
-## Loss Function
+**Axis II — Loss / inductive-bias ablation** (same backbone, all 12 channels):
 
 ```
-L_total = L_rain + λ_smooth·L_smooth + λ_extreme·L_extreme  (+ λ_oro·L_oro, opt-in)
-
-L_rain:    standard (unweighted) MSE over the full precipitation field
-L_smooth:  weak spatial + temporal smoothness
-L_extreme: MSE restricted to extreme pixels (P_true > threshold)
-L_oro:     orographic uplift consistency — OPT-IN, requires explicitly
-           configured environmental wind channels
+P0  MSE only                     (= I5, exact artifact identity)
+P1  MSE + Smooth
+P2  MSE + Extreme (alias of legacy E6)
+P3  MSE + Smooth + Extreme
 ```
 
-- `L_nonneg` was **removed**: the output is already `ReLU(...) ≥ 0`, so a non-negativity penalty is identically zero.
-- The orographic term is **disabled by default**. `u_move`/`v_move` are storm *translation* velocities, not atmospheric wind, and must never be used as the wind terms of an orographic constraint.
+> Conjectural `P4` (orographic prior) and `P5` (full q(V·∇h) stack) are
+> **BLOCKED_BY_ENVIRONMENTAL_WIND_DATA** and intentionally have no runnable
+> configuration in the freeze. They are not part of the current paper.
 
----
+See [`docs/RESEARCH_DESIGN_C_FREEZE.md`](docs/RESEARCH_DESIGN_C_FREEZE.md) for
+the canonical alias map, frozen controls, and disallowed claims.
 
-## Data Sources
+## What is sealed
 
-| Data | Source | Resolution | Description |
-|------|--------|------------|-------------|
-| CMA Best Track | China Meteorological Admin. | 6h → 0.5h (interp.) | Typhoon track & intensity |
-| GPM IMERG | NASA | 0.1° (~10km), 30min | Satellite precipitation |
-| ETOPO1 DEM | NOAA | 1 arc-min (~1.8km) | Terrain elevation |
+| Path                | Status   | Why                                                   |
+|---------------------|----------|-------------------------------------------------------|
+| `outputs/`          | n/a      | Local-only throwaway; never tracked.                  |
+| `saved_models/*.pth`| never    | Large blob; SHA256 stored inside each `manifest.json`.|
+| Test split          | **SEALED** | Single, controlled, post-mandate `final-test` auth — see [`docs/FINAL_TEST_AUTHORIZATION.md`](docs/FINAL_TEST_AUTHORIZATION.md). |
+| Editor's quick-pick | **SEALED** | `evaluate_models.py` fail-fast; `--split test` refused. |
 
-The 12-channel paper schema is defined canonically in `src/config.py` (`CHANNEL_NAMES`).
+Test-set pre-registration, leakage-safe splits, train-only normalization, and
+validation-only checkpoint selection are documented in:
 
----
+- [`docs/PRE_FINAL_TEST_FREEZE.md`](docs/PRE_FINAL_TEST_FREEZE.md)
+- [`docs/RESEARCH_DESIGN_C_FREEZE.md`](docs/RESEARCH_DESIGN_C_FREEZE.md)
+- [`docs/EVALUATION_PROTOCOL_V2.md`](docs/EVALUATION_PROTOCOL_V2.md)
+- [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) (RESOLVED risk table)
+- [`docs/LEAKAGE_AND_TEST_LIMIT_AUDIT.md`](docs/LEAKAGE_AND_TEST_LIMIT_AUDIT.md)
+- [`docs/FINAL_TEST_AUTHORIZATION.md`](docs/FINAL_TEST_AUTHORIZATION.md)
 
-## Legacy Competition Results (NOT paper evidence)
-
-The following numbers come from the **legacy competition pipeline** (hard-coded physics post-processing, random 80/20 split, no ground truth for the target typhoons). They are recorded here for provenance only and **must not be used as validated paper results**.
-
-| Finding | Caveat |
-|---------|--------|
-| "Terrain ablation: P_max drops 26.4%" | Legacy hard-coded `×0.35` orographic factor; also inconsistent with the -20.91% figure in the essay |
-| "V-INTENSE S_ext +19.2%" | Legacy scenario post-processing, no ground truth |
-| "Spearman ρ > 0.6 (wind ↔ extreme)" | Competition Q1 analysis, not part of the nowcasting pipeline |
-
----
-
-## Quick Start
-
-### Installation
+## Reproducing this study (minimum steps)
 
 ```bash
+# 1. Environment
 pip install -r requirements.txt
+
+# 2. Validation-stage test suite (≥69/69 expected)
+pytest -q tests/test_evaluation_protocol_v2.py tests/test_experiment.py
+
+# 3. Run a single formal experiment  (e.g. Axis II P3)
+python scripts/run_experiment.py --mode train \
+  --config configs/experiments/P3_resconvlstm_smooth_extreme.yaml
+
+# 4. Cross-experiment event-level analysis  (per protocol §17)
+python scripts/analyze_ablation_results.py \
+  --results-dir results --output-dir tables/ablation_analysis
+
+# 5. Re-evaluate the legacy E2/I2 checkpoint with evaluator v2 (validation only)
+python scripts/evaluate_checkpoint.py \
+  --config  configs/experiments/E2_resconvlstm.yaml \
+  --checkpoint saved_models/E2_resconvlstm_seed42/E2_resconvlstm_seed42_best.pth \
+  --split val --out results/I2_resconvlstm_seed42_v2
 ```
 
-### Build the dataset (12 channels, leakage-safe)
+GPU is required for steps 3 and 5 (validation set has 7 events / 1,266 windows).
 
-```bash
-python scripts/build_paper_dataset.py \
-    --cma-dir CMABSTdata --tif-dir TIFdata --dem Global_DEM.tif \
-    --out ConvLSTM_Dataset_128.h5
-python scripts/validate_paper_dataset.py --h5 ConvLSTM_Dataset_128.h5
-```
+## What is *not* claimed here
 
-### Training (not yet run for the paper)
+- This is **not** a "new model" paper. ConvLSTM / Residual ConvLSTM are the
+  baseline backbone; SOTA claims at `n_event = 4` have no statistical
+  standing.
+- The auxiliary losses in Axis II are explicitly **not** a "physics prior":
+  smoothness is spatial/temporal regularization; extreme-MSE is task-driven
+  rare-event emphasis. A real orographic constraint requires time- and
+  grid-aligned environmental wind/moisture, which is out of scope.
+- All auxiliary numbers in the legacy competition essay remain legacy artifacts.
 
-```bash
-python -m src.training.trainer --config configs/default.yaml
-```
+## Repository layout (paper assets)
 
-### Evaluation
+| Path | Purpose |
+|---|---|
+| `src/data/`        | Streaming dataset, channel-subset semantics, transforms |
+| `src/models/`      | PlainConvLSTM / ResConvLSTM / PI-ResConvLSTM / TrajGRU |
+| `src/training/`    | Trainer with base-rain-MSE selection |
+| `src/evaluation/`  | Evaluator v2 (`aggregator_v2` + `paired_event_differences`) |
+| `scripts/`         | `run_experiment.py`, `evaluate_checkpoint.py`, `analyze_ablation_results.py`, `verify_experiment_artifact.py` |
+| `configs/experiments/` | Frozen canonical configs (E0–E6, B1, P1, P3) |
+| `configs/experiment_aliases_v2.yaml` | Single-source-of-truth alias registry |
+| `results/`         | Paper-grade experiment assets (manifest, result_v2.json, validation.md, history.json, config.yaml; **never** *.pth) |
+| `tables/ablation_analysis/` | Auto-generated ablation analysis (long CSV + per-event-diffs + Holm + Markdown) |
+| `deliverables/PI_ResConvLSTM_Paper_Package/` | Submission-ready code/docs/tables/paper for the GPU host rerun |
 
-```python
-from src.evaluation.metrics import compute_all_metrics
+## Data
 
-metrics = compute_all_metrics(P_pred, P_true)
-print(metrics["MAE"], metrics["CSI_10mmh"])
-```
+| Data | Source | Resolution | Role |
+|------|--------|-----------|------|
+| GPM IMERG | NASA | 0.1° (~10 km), 30 min | Precipitation target |
+| CMA Best Track | China Meteorological Admin. | 6 h → 0.5 h interp. | Storm track + intensity |
+| ETOPO1 DEM | NOAA | 1 arc-min (~1.8 km) → reprojected to GPM grid | Terrain channels |
 
----
+Splits: train 25 events / 4,894 windows (2014–2021) · val 7 events / 1,266
+windows (2022) · **test 4 events / 707 windows (2023–2024)** — sealed.
 
-## Reference
+## Status snapshot
 
-1. Shi et al. (2015). Convolutional LSTM Network: A Machine Learning Approach for Precipitation Nowcasting. *NeurIPS*.
-2. Hu et al. (2018). Squeeze-and-Excitation Networks. *CVPR*.
-3. Raissi et al. (2019). Physics-informed neural networks. *Journal of Computational Physics*.
+| Item | Status |
+|---|---|
+| Design freeze | `776d2c7` |
+| Evaluator v2 / runner / trainer | `ea50b08` |
+| TrajGRU device-portability test | `1391b2d` |
+| GPU training gate | **CLOSED** — opens after E2/I2 v2 re-evaluation completes on the GPU host |
+| Test status | **SEALED** |
+| Validation test suite | 69 / 69 passing |
+| 5090 paper-experiments rerun | running (`scripts/run_paper_experiments.py`) |
 
 ## License
 
-This project is for academic research purposes. See `docs/PROJECT_DOC.md` for full documentation.
+Academic research. See `LICENSE` once added at camera-ready; the current
+research-use terms are documented in [`docs/PROJECT_DOC.md`](docs/PROJECT_DOC.md).
+
+## Citation
+
+A pre-print draft will accompany the camera-ready submission. Until then,
+cite the underlying methodology references:
+
+1. Shi et al. (2015). *Convolutional LSTM Network: A Machine Learning
+   Approach for Precipitation Nowcasting.* NeurIPS.
+2. Hu et al. (2018). *Squeeze-and-Excitation Networks.* CVPR.
+3. Shi et al. (2017). *Deep Learning for Precipitation Nowcasting: A
+   Benchmark and a Model for the World.* ICLR.
+4. Raissi et al. (2019). *Physics-informed neural networks.* J. Comput. Phys.
