@@ -20,7 +20,27 @@ _matplotlib_cache/
 *.csv
 
 # Outputs
+# --------------------------------------------------------------------
+# Convention (see also results/README.md):
+#   outputs/         — local-only throwaway, NEVER committed.
+#                      This is the legacy sandbox default.
+#   results/         — paper-asset directory; EXPERIMENT result files are
+#                      committed (manifest, result_v2.json, validation.md,
+#                      history.json, config snapshot, plus *.csv outputs from
+#                      analyze_ablation_results.py and archive_validation_results.py).
+#                      Model *.pth and other large binary blobs are kept out
+#                      of the git repo (cf. *.pth and saved_models/ entries
+#                      below) and live on the GPU host with their SHA256
+#                      recorded inside each manifest.json.
+#   saved_models/    — *.pth checkpoints; NEVER committed.
+# --------------------------------------------------------------------
 outputs/
+saved_models/
+
+# Per-tree exceptions for paper outputs only.
+# Keep *.csv blocked globally; explicitly allow paper-grade CSVs under results/ and tables/.
+!results/**/*.csv
+!tables/**/*.csv
 
 # Jupyter
 .ipynb_checkpoints/

@@ -2,7 +2,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org)
-[![Validation Test Status](https://img.shields.io/badge/pytest-69%2F69%20passed-brightgreen.svg)](tests/)
+[![Validation Test Status](https://img.shields.io/badge/pytest-145%2F145%20passed-brightgreen.svg)](tests/)
 [![Test Status](https://img.shields.io/badge/TEST--STATUS-SEALED-red.svg)](docs/PRE_FINAL_TEST_FREEZE.md)
 
 A research codebase for **30-minute tropical-cyclone precipitation nowcasting**
@@ -81,8 +81,8 @@ validation-only checkpoint selection are documented in:
 # 1. Environment
 pip install -r requirements.txt
 
-# 2. Validation-stage test suite (≥69/69 expected)
-pytest -q tests/test_evaluation_protocol_v2.py tests/test_experiment.py
+# 2. Validation-stage test suite (≥145/145 expected)
+pytest -q tests/
 
 # 3. Run a single formal experiment  (e.g. Axis II P3)
 python scripts/run_experiment.py --mode train \
@@ -92,7 +92,12 @@ python scripts/run_experiment.py --mode train \
 python scripts/analyze_ablation_results.py \
   --results-dir results --output-dir tables/ablation_analysis
 
-# 5. Re-evaluate the legacy E2/I2 checkpoint with evaluator v2 (validation only)
+# 5. Promote GPU outputs to the paper-grade results/ tree
+python scripts/archive_validation_results.py \
+  --results-root results --source-dir outputs/backbone_gate \
+  --source-dir outputs/axis_i --source-dir outputs/axis_ii_c1
+
+# 6. Re-evaluate the legacy E2/I2 checkpoint with evaluator v2 (validation only)
 python scripts/evaluate_checkpoint.py \
   --config  configs/experiments/E2_resconvlstm.yaml \
   --checkpoint saved_models/E2_resconvlstm_seed42/E2_resconvlstm_seed42_best.pth \
@@ -120,7 +125,7 @@ GPU is required for steps 3 and 5 (validation set has 7 events / 1,266 windows).
 | `src/models/`      | PlainConvLSTM / ResConvLSTM / PI-ResConvLSTM / TrajGRU |
 | `src/training/`    | Trainer with base-rain-MSE selection |
 | `src/evaluation/`  | Evaluator v2 (`aggregator_v2` + `paired_event_differences`) |
-| `scripts/`         | `run_experiment.py`, `evaluate_checkpoint.py`, `analyze_ablation_results.py`, `verify_experiment_artifact.py` |
+| `scripts/`         | `run_experiment.py`, `evaluate_checkpoint.py`, `analyze_ablation_results.py`, `archive_validation_results.py`, `verify_experiment_artifact.py` |
 | `configs/experiments/` | Frozen canonical configs (E0–E6, B1, P1, P3) |
 | `configs/experiment_aliases_v2.yaml` | Single-source-of-truth alias registry |
 | `results/`         | Paper-grade experiment assets (manifest, result_v2.json, validation.md, history.json, config.yaml; **never** *.pth) |
@@ -145,9 +150,11 @@ windows (2022) · **test 4 events / 707 windows (2023–2024)** — sealed.
 | Design freeze | `776d2c7` |
 | Evaluator v2 / runner / trainer | `ea50b08` |
 | TrajGRU device-portability test | `1391b2d` |
+| Research-analysis infra (this branch) | `research-analysis-infra` (Draft PR; not merged) |
+| **VALIDATION MATRIX** | **IN PROGRESS** — scripts ready, awaiting GPU artifacts |
 | GPU training gate | **CLOSED** — opens after E2/I2 v2 re-evaluation completes on the GPU host |
 | Test status | **SEALED** |
-| Validation test suite | 69 / 69 passing |
+| Validation test suite | 145 / 145 passing |
 | 5090 paper-experiments rerun | running (`scripts/run_paper_experiments.py`) |
 
 ## License
