@@ -18,7 +18,18 @@
 | **Sign-flip** | exact two-sided; `n_pairs ≥ 4` ⇒ inferential, else descriptive-only |
 | **Holm correction** | per `(metric, threshold)` family, `family_size ≥ 3`, `n_pairs ≥ 4` |
 | **Window-level significance** | FORBIDDEN by construction |
+| **Improvement-delta convention** | positive Δ = candidate is better than baseline (lower-is-better: `baseline − candidate`; higher-is-better: `candidate − baseline`; BIAS: `\|b−1\| − \|c−1\|`). See `src/evaluation/evaluator.py::paired_event_differences` docstring. |
 | **SCIENTIFIC_SEMANTICS_CHANGED** | **NO** |
+
+> **Revision note (R39):** Earlier drafts of this audit (and the
+> MANUSCRIPT_SKELETON §5/§6/§8 prose) had the Axis II P1/P2/P3
+> interpretation inverted. The analyzer code, the canonical CSVs in
+> `tables/ablation_analysis/`, and the evaluator's
+> `paired_event_differences` have ALWAYS obeyed
+> "positive diff = improvement". Only the human-readable prose was
+> wrong; the underlying tables were correct. This revision flips the
+> prose to match the tables. The B1 row in §E was also brought into
+> agreement with `results/B1_trajgru_seed42/result_v2.json`.
 
 ---
 
@@ -88,7 +99,7 @@ duplicate I2 fingerprint match (see §C). No canonical target was created
 for `P0` separately — `P0` shares the I5 artifact (see §D).
 
 The `result_v2.json` files were copied **byte-for-byte** via
-`shutil.copy2`. No re-serialization occurred. SHA256 of source vs target
+`shutil.copy2`. No re-sampling occurred. SHA256 of source vs target
 `result_v2.json` is identical for every canonical directory.
 
 ---
@@ -155,18 +166,24 @@ FAIL FAST.
 
 ## E. Overall validation metric table (event-macro means)
 
+Computed as the **equal-event mean of `per_event[<tid>][metric]`** in the
+canonical `results/<exp>/result_v2.json` — that is the **only** source of
+truth for paper tables. No legacy / scratch / hand-edited numbers are
+admitted; this invariant is enforced by
+`tests/test_canonical_consistency.py`.
+
 | experiment_id | aliases | MAE_event | RMSE_event | SSIM_event | CSI@5 | CSI@10 | CSI@20 | CSI@30 |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| E0_persistence | I0 | 0.138 | 0.576 | 0.978 | 0.399 | 0.300 | 0.292 | 0.165 |
-| E1_plain_convlstm | I1 | 0.238 | 0.883 | 0.936 | 0.000 | 0.000 | 0.000 | 0.000 |
-| E2_resconvlstm | I2 | 0.131 | 0.504 | 0.980 | 0.405 | 0.311 | 0.231 | 0.119 |
-| B1_trajgru | *(none)* | 0.226 | 0.726 | 0.963 | 0.243 | 0.146 | 0.099 | 0.018 |
-| E3_resconvlstm_cma | I3 | 0.143 | 0.517 | 0.979 | 0.425 | 0.330 | 0.262 | 0.100 |
-| E4_static_terrain | I4 | 0.140 | 0.516 | 0.979 | 0.418 | 0.324 | 0.196 | 0.094 |
-| E5_terrain_geometry | I5 \| P0 | 0.143 | 0.519 | 0.979 | 0.422 | 0.322 | 0.235 | 0.118 |
-| P1_resconvlstm_smooth | P1 | 0.123 | 0.499 | 0.981 | 0.415 | 0.316 | 0.254 | 0.121 |
-| E6_terrain_extreme | P2 | 0.353 | 0.831 | 0.901 | 0.359 | 0.268 | 0.300 | 0.153 |
-| P3_resconvlstm_smooth_extreme | P3 | 0.223 | 0.671 | 0.955 | 0.370 | 0.266 | 0.300 | 0.154 |
+| E0_persistence | I0 | 0.1380 | 0.5763 | 0.9775 | 0.399 | 0.300 | 0.292 | 0.165 |
+| E1_plain_convlstm | I1 | 0.2376 | 0.8834 | 0.9363 | 0.000 | 0.000 | 0.000 | 0.000 |
+| E2_resconvlstm | I2 | 0.1313 | 0.5036 | 0.9798 | 0.405 | 0.311 | 0.231 | 0.119 |
+| B1_trajgru | *(none)* | 0.2332 | 0.8935 | 0.9380 | 0.243 | 0.146 | 0.099 | 0.018 |
+| E3_resconvlstm_cma | I3 | 0.1427 | 0.5172 | 0.9789 | 0.425 | 0.330 | 0.262 | 0.100 |
+| E4_static_terrain | I4 | 0.1405 | 0.5158 | 0.9794 | 0.418 | 0.324 | 0.196 | 0.094 |
+| E5_terrain_geometry | I5 \| P0 | 0.1429 | 0.5188 | 0.9790 | 0.422 | 0.322 | 0.235 | 0.118 |
+| P1_resconvlstm_smooth | P1 | 0.1227 | 0.4994 | 0.9806 | 0.415 | 0.316 | 0.254 | 0.121 |
+| E6_terrain_extreme | P2 | 0.3532 | 0.8308 | 0.9013 | 0.359 | 0.268 | 0.300 | 0.153 |
+| P3_resconvlstm_smooth_extreme | P3 | 0.2228 | 0.6708 | 0.9550 | 0.370 | 0.266 | 0.300 | 0.154 |
 
 **Notes**:
 - `I1` (plain ConvLSTM) emits zero categorical hits at every threshold;
@@ -174,36 +191,40 @@ FAIL FAST.
   is consistent with the documented limitation that a plain ConvLSTM
   without residual connections is unstable on this task; it is reported
   as **backbone sanity** only, never as an information effect.
-- `B1_trajgru` is also backbone sanity. The categorical scores are non-
-  zero but consistently the worst among trainable models. TrajGRU
-  requires sequence-level flow features that this run did not supply in
-  the same channel matrix; it is reported for completeness, not as a
-  recommendation.
-- `E6_terrain_extreme` (P2) is a stress-test variant. Its high MAE/RMSE
-  is by construction — the auxiliary extreme-rain penalty intentionally
-  hurts the loss on typical events to evaluate robustness.
+- `B1_trajgru` is also backbone sanity. Categorical scores are non-zero
+  but consistently the worst among trainable models. TrajGRU requires
+  sequence-level flow features that this run did not supply in the same
+  channel matrix; it is reported for completeness, not as a recommendation.
+- `E6_terrain_extreme` (P2) is a stress-test variant. By construction
+  the auxiliary extreme-rain penalty intentionally *trades continuous
+  metric quality for extreme-rain detection sensitivity* (see §G.2 /
+  categorical@τ tables). It is reported as an explicit trade-off, not as
+  a continuous-metric improvement.
 
 ---
 
 ## F. Axis I formal contrasts (event-paired; positive Δ = improvement)
 
-Six metrics × four thresholds × three contrasts = 72 rows. Selected
-high-signal rows (n_pairs = 7 for continuous, 4 for categorical@τ ≤ 10):
+Three contrasts × (3 continuous metrics + 6 categorical metrics × 4
+thresholds) = 81 rows. Selected high-signal rows below (n_pairs = 7 for
+continuous, 4 for categorical@τ ≤ 10). Full table in
+`tables/ablation_analysis/contrasts_long.csv`.
 
-### F.1 I3 − I2 (add CMA)
+### F.1 I3 − I2 (add CMA storm-state channels)
 | Metric@τ | mean Δ | CI95 | p (sign-flip) | Inferential |
 |---|---:|---|---:|---|
-| MAE_event (n=7) | **−0.0114** | [−0.0212, +0.0005] | 0.125 | yes |
+| MAE_event (n=7) | −0.0114 | [−0.0212, +0.0005] | 0.125 | yes |
 | RMSE_event (n=7) | −0.0136 | [−0.0342, +0.0091] | 0.453 | yes |
 | SSIM_event_mean (n=7) | −0.0009 | [−0.0018, +0.0006] | 0.125 | yes |
 | CSI@5 (n=4) | +0.0196 | [+0.0079, +0.0312] | 0.125 | yes |
 | HSS@5 (n=4) | +0.0242 | [+0.0076, +0.0450] | 0.125 | yes |
 
-**Reading**: Continuous metrics suggest I3 is slightly worse than I2 on
-event-mean MAE/RMSE/SSIM (Δ < 0 for lower-is-better means I3 is worse).
-Categorical metrics at τ = 5 mm/h show small positive Δ for I3 (CSI,
-HSS); the CI excludes zero on the upper tail, indicating possible
-detection gain at low-to-moderate rain thresholds.
+**Reading** (improvement-delta convention: positive = I3 better):
+Continuous metrics are slightly negative (I3 marginally *worse* than I2
+on event-mean MAE/RMSE/SSIM, all with CI crossing zero). Categorical
+metrics at τ = 5 mm/h show small positive Δ (CSI, HSS); the CI excludes
+zero on the better side, indicating a possible low-threshold detection
+gain.
 
 ### F.2 I4 − I3 (add static-terrain channel)
 | Metric@τ | mean Δ | CI95 | p | Inferential |
@@ -214,8 +235,8 @@ detection gain at low-to-moderate rain thresholds.
 | HSS@5 (n=4) | −0.0058 | [−0.0103, −0.0025] | 0.125 | yes |
 
 **Reading**: Adding the static-terrain channel does NOT improve
-performance vs I3; the CI on categorical@5 crosses zero on the upper
-bound but the lower side excludes zero, so I4 is weakly worse.
+performance vs I3 at this seed; continuous diffs cross zero on both
+sides, and categorical@5 goes in the worse direction.
 
 ### F.3 I5 − I4 (add full 12-channel terrain geometry)
 | Metric@τ | mean Δ | CI95 | p | Inferential |
@@ -226,15 +247,15 @@ bound but the lower side excludes zero, so I4 is weakly worse.
 | CSI@20 (n=3) | +0.0384 | [+0.0004, +0.0955] | 0.250 | **no** |
 
 **Reading**: I5 vs I4 shows mixed signals. Continuous metrics are
-indistinguishable. Categorical@5 is slightly positive (Δ CSI +0.004,
-CI excludes zero on lower bound). Categorical@20 is positive but n=3
-so descriptive-only.
+indistinguishable (mean diff ≈ 0; both CIs cross zero). Categorical@5
+is directionally positive (Δ CSI +0.004) but small. Categorical@20 is
+positive but n=3 so descriptive-only.
 
 ---
 
-## G. Axis II formal contrasts
+## G. Axis II formal contrasts (improvement-delta = positive = candidate better)
 
-### G.1 P1 − P0 (smoothness penalty)
+### G.1 P1 − P0 (smoothness penalty on top of I5/P0)
 | Metric@τ | mean Δ | CI95 | p | Inferential |
 |---|---:|---|---:|---|
 | MAE_event (n=7) | **+0.0202** | [+0.0142, +0.0279] | **0.0156** | yes |
@@ -243,24 +264,41 @@ so descriptive-only.
 | CSI@5 | −0.0074 | [−0.0145, −0.0004] | 0.625 | yes |
 | FAR@5 | +0.0194 | [+0.0132, +0.0285] | 0.125 | yes |
 
-**Reading**: P1 (smoothness penalty on top of I5) is **statistically
-significantly WORSE** than I5 on continuous MAE and SSIM (p=0.0156 with
-n=7 paired events, CI excludes zero on the worse side). This is a
-single-seed, single-threshold observation; it must be confirmed on
-multiple seeds before any inductive-bias claim is made.
+**Reading**: P1 (smoothness penalty on top of I5) **directionally
+improves every continuous validation metric** at this seed. MAE_event
+Δ = +0.020 mm/h, SSIM Δ = +0.0015, both with raw paired sign-flip
+p = 0.0156 on n=7 events; the 95% bootstrap CI on MAE excludes zero on
+the better side. The categorical@5 Δ is small and goes the other way
+(CSI −0.007, FAR +0.019), so the trade-off between event-mean
+continuous quality and 5 mm/h categorical specificity at this seed is
+mixed. Holm-adjusted p = 0.094 across the 6-contrast MAE family (see
+§J) — descriptive-significant but **not** inferentially significant at
+the preregistered family gate. **Not publishable as an established
+effect** at this seed; multi-seed confirmation is required before
+any inductive-bias claim is made about the smoothness penalty.
 
-### G.2 P2 − P0 (extreme-rain penalty)
+### G.2 P2 − P0 (extreme-rain penalty on top of I5/P0)
 | Metric@τ | mean Δ | CI95 | p | Inferential |
 |---|---:|---|---:|---|
 | MAE_event | **−0.2103** | [−0.4139, −0.0654] | **0.0156** | yes |
 | RMSE_event | **−0.3121** | [−0.4691, −0.1695] | **0.0156** | yes |
 | SSIM_event_mean | **−0.0778** | [−0.1295, −0.0347] | **0.0156** | yes |
+| POD@5 | +0.1203 | [+0.0621, +0.1772] | 0.125 | yes |
+| POD@10 | +0.1693 | [+0.0714, +0.2628] | 0.125 | yes |
+| FAR@5 | +0.1767 | [+0.1162, +0.2469] | 0.125 | yes |
+| FAR@10 | +0.3808 | [+0.2937, +0.4707] | 0.125 | yes |
 | HSS@10 | −0.0577 | [−0.1018, −0.0147] | 0.125 | yes |
 
-**Reading**: P2 is significantly worse on continuous metrics (Δ < 0
-means P2 has LOWER MAE/RMSE and HIGHER SSIM — the penalty is helping
-on the validation events). All three continuous p-values = 0.0156, with
-CIs excluding zero on the better side.
+**Reading**: P2 **substantially worsens every continuous validation
+metric** at this seed (MAE Δ = −0.21 mm/h, RMSE Δ = −0.31 mm/h, SSIM
+Δ = −0.078), all three with raw p = 0.0156 (n=7) and 95% CIs excluding
+zero on the worse side. **In trade-off**, P2 increases POD on
+extreme-rain detection (POD@5 +0.120, POD@10 +0.169, both raw p = 0.125,
+n=4) **at the cost of false alarms** (FAR@5 +0.177, FAR@10 +0.381, raw
+p = 0.125, n=4). HSS@10 is negative (P2 is worse on the joint
+Heidke score). This is an **explicit trade-off, not a continuous
+improvement**. Holm-adjusted p = 0.094 across the 6-contrast MAE family
+— descriptive-significant but **not** inferentially significant.
 
 ### G.3 P3 − P0 (smoothness + extreme combined)
 | Metric@τ | mean Δ | CI95 | p | Inferential |
@@ -268,13 +306,16 @@ CIs excluding zero on the better side.
 | MAE_event | −0.0799 | [−0.2224, +0.0074] | 1.000 | yes |
 | RMSE_event | −0.1521 | [−0.3116, −0.0317] | 0.453 | yes |
 | SSIM_event_mean | −0.0241 | [−0.0594, −0.0018] | 0.453 | yes |
+| POD@5 | +0.0975 | [+0.0437, +0.1513] | 0.125 | yes |
+| FAR@5 | +0.1688 | [+0.1087, +0.2319] | 0.125 | yes |
 | CSI@5 | −0.0516 | [−0.1047, −0.0125] | 0.125 | yes |
 | HSS@5 | −0.0528 | [−0.1080, −0.0112] | 0.125 | yes |
 
-**Reading**: P3 is directionally consistent with P2 (negative Δ on
-lower-is-better metrics means P3 is BETTER). CIs include zero on the
-better side for MAE but exclude zero on the better side for SSIM. The
-P3 − P1 − P2 + P0 interaction is informative but small at this seed.
+**Reading**: P3 has the **same trade-off direction as P2 but generally
+less extreme**: continuous diffs are negative (P3 is worse on MAE/RMSE/
+SSIM; CIs include zero on the worse side for MAE). POD gains are
+smaller than P2 (+0.098 vs +0.120 at τ=5); FAR costs are similar. P3
+shows no continuous-metric improvement over P0.
 
 ---
 
@@ -303,8 +344,7 @@ are reported per contrast × metric × threshold in `contrasts_long.csv`
 and selected rows in §F / §G above.
 
 A handful of contrasts have CIs that EXCLUDE zero on one side only:
-these are the candidates for multi-seed confirmation. See the
-recommendation in §N.
+these are the candidates for multi-seed confirmation. See §N.
 
 ---
 
@@ -318,13 +358,13 @@ correction is applied **per `(metric, threshold)` family** with
 **No family reaches Holm-adjusted p < 0.05 at this seed.** The smallest
 Holm-adjusted p-values are:
 
-| Family | Contrast | p_raw | p_holm |
-|---|---|---:|---:|
-| MAE_event (continuous, n=7) | P1 − P0 | 0.0156 | 0.0938 |
-| MAE_event (continuous, n=7) | P2 − P0 | 0.0156 | 0.0938 |
-| RMSE_event (continuous, n=7) | P2 − P0 | 0.0156 | 0.0938 |
-| SSIM_event_mean (continuous, n=7) | P1 − P0 | 0.0156 | 0.0938 |
-| SSIM_event_mean (continuous, n=7) | P2 − P0 | 0.0156 | 0.0938 |
+| Family | Contrast | p_raw | p_holm | Direction |
+|---|---|---:|---:|---|
+| MAE_event (continuous, n=7) | P1 − P0 | 0.0156 | 0.0938 | P1 better |
+| MAE_event (continuous, n=7) | P2 − P0 | 0.0156 | 0.0938 | P2 worse |
+| RMSE_event (continuous, n=7) | P2 − P0 | 0.0156 | 0.0938 | P2 worse |
+| SSIM_event_mean (continuous, n=7) | P1 − P0 | 0.0156 | 0.0938 | P1 better |
+| SSIM_event_mean (continuous, n=7) | P2 − P0 | 0.0156 | 0.0938 | P2 worse |
 
 All five are at the **descriptive-significant** level (raw p < 0.05) but
 **not inferentially significant** after Holm adjustment at the
@@ -346,7 +386,7 @@ interpreted as a hypothesis rejection under the preregistered
    version can carry.
 4. **No held-out test.** The held-out 4 events / 707 windows remain
    sealed. No inference in this audit is a held-out test result.
-5. **Categorical@τ metrics is only.** We report event-level pooled
+5. **Categorical@τ metrics only.** We report event-level pooled
    categorical scores; we do NOT claim threshold-transfer across
    arbitrary thresholds beyond the frozen four (5, 10, 20, 30 mm/h).
 6. **Single sign-flip test.** Bootstrap CIs are descriptive; the
@@ -356,18 +396,22 @@ interpreted as a hypothesis rejection under the preregistered
 
 ## L. Interpretation boundaries
 
-- The inferential statements in §G are **per-seed observations**. They
+- The descriptive statements in §G are **per-seed observations**. They
   are written up because the analysis infra produced them; they MUST
-  NOT be paraphrased in the paper as "P2 is robustly better than I5 on
-  validation". The paper text must read "On validation at seed 42, P2
-  improves MAE by Δ = −0.21 mm/h (raw p = 0.0156, Holm-adjusted p =
-  0.094 across the 6-contrast MAE family; not inferentially significant
-  at the preregistered gate)."
-- The continuous-vs-categorical disagreement (e.g. P1 is worse on
-  continuous but no clear signal on categorical) is reported as-is; it
-  is not adjudicated here.
-- Any claim that "the smoothness penalty is helpful" or "the extreme
-  penalty is helpful" is OUT OF SCOPE for this audit at this seed.
+  NOT be paraphrased in the paper as "P2 is robustly worse than I5 on
+  validation" or "P1 is robustly better than I5 on validation". The
+  paper text must read "On validation at seed 42, P1 improves MAE by
+  Δ = +0.020 mm/h (raw p = 0.0156, Holm-adjusted p = 0.094 across the
+  6-contrast MAE family; not inferentially significant at the
+  preregistered gate)" and the corresponding P2 / P3 phrasings.
+- The continuous-vs-categorical disagreement (P1 improves continuous but
+  has mixed categorical@5; P2 worsens continuous but improves POD at the
+  cost of FAR) is reported as-is; it is not adjudicated here.
+- Any claim that "the smoothness penalty is helpful", "the extreme
+  penalty is helpful", or "P2 has better categorical skill overall" is
+  OUT OF SCOPE for this audit at this seed. The trade-off at τ = 5 / 10
+  mm/h between POD and FAR is a categorical-only statement that does
+  NOT license a paper claim.
 
 ---
 
@@ -385,26 +429,37 @@ SEALED** is preserved by the archiver and the analyzer via the
 ## N. Recommendation for multi-seed confirmation
 
 Before any inferential claim enters the paper, the following
-descriptively-positive rows MUST be reconfirmed on additional seeds:
+descriptively-positive rows MUST be reconfirmed on additional seeds
+(see `docs/MULTISEED_PROTOCOL_FREEZE.md` for the frozen multi-seed
+protocol):
 
-1. **P2 − P0 continuous metrics** (MAE, RMSE, SSIM all p_raw = 0.0156).
-   Run P0 (validate-only reuse of I5) + P2 with seeds {42, 123, 2024,
-   7, 31415}; confirm both (a) the sign of Δ stays negative on MAE and
-   positive on SSIM, and (b) the median across seeds has a 95% CI that
-   excludes zero.
-2. **P1 − P0 continuous metrics** (MAE p_raw = 0.0156, SSIM p_raw =
-   0.0156, but Δ > 0 = P1 WORSE on MAE). Confirm the sign stays
-   positive across seeds; this would establish that the smoothness
-   penalty HURTS validation at this task, before the paper claims
-   anything about its role.
-3. **I3 − I2 categorical@5** (CSI, HSS, FAR all p_raw = 0.125 with
-   n=4). This is a borderline signal at low-to-moderate rain thresholds;
-   it must be confirmed with more event-paired samples before any
-   claim is made.
+1. **P1 − P0 continuous metrics** (MAE_event p_raw = 0.0156, SSIM_event
+   p_raw = 0.0156). Confirm the sign stays positive (P1 better on MAE
+   and SSIM) across all five seeds; that the seed-averaged event-level
+   Δ is positive on MAE and SSIM; that the 95% event-bootstrap CI on the
+   seed-averaged Δ excludes zero; and that ≥ 4/5 seeds agree on
+   direction. If all four hold, the smoothness penalty enters the paper
+   as a continuous-metric improvement at seed-robust significance;
+   otherwise it is reported as "directionally positive at one seed;
+   multi-seed confirmation pending".
+2. **P2 − P0 continuous metrics** (MAE_event p_raw = 0.0156, RMSE_event
+   p_raw = 0.0156, SSIM_event p_raw = 0.0156). Confirm the sign stays
+   negative (P2 worse on MAE/RMSE/SSIM) across seeds. If robust, the
+   paper claims the **explicit trade-off** (continuous worse, POD
+   better, FAR worse) at the same seed-robust gate.
+3. **I3 − I2 categorical@5** (CSI, HSS, FAR all p_raw = 0.125 with n=4).
+   This is a borderline signal at low-to-moderate rain thresholds; it
+   must be confirmed with more event-paired samples before any claim
+   is made. Categorical@τ signals in this band have limited power at
+   n_event = 7 / τ ≥ 5 mm/h, so multi-seed confirmation requires
+   preservation of the event as the primary independent unit per
+   `docs/MULTISEED_PROTOCOL_FREEZE.md`.
 
 Recommended multi-seed experiments: {42, 123, 2024, 7, 31415}. Five
 seeds is the minimum to make a credible claim about initialization
-robustness without overstating power.
+robustness without overstating power. **Do NOT execute until
+`docs/MULTISEED_PROTOCOL_FREEZE.md` is in place and the interpretation
+bugs of this revision are verified.**
 
 ---
 
@@ -437,10 +492,10 @@ python scripts/analyze_ablation_results.py \
 ```
 
 The full output of this audit is in `tables/ablation_analysis/`:
-- `experiment_summary.csv` (11 rows: 10 canonical + I1 emitted by mistake
-  was correctly deduped; B1 backbone sanity included)
-- `contrasts_long.csv` (174 rows: 3 Axis I × 27 metric/τ + 3 Axis II ×
-  27 metric/τ + 4 backbone sanity pairs × 27 metric/τ)
+- `experiment_summary.csv` (10 canonical rows: B1 backbone sanity
+  included; I2 deduped)
+- `contrasts_long.csv` (one row per `axis × contrast × metric ×
+  threshold`; positive `mean_diff` ⇒ candidate better)
 - `per_event_differences.csv` (one row per `axis × contrast × metric ×
   threshold × typhoon_id`)
 - `statistical_summary.csv` (Holm-adjusted p per `(metric, threshold)`
@@ -456,18 +511,29 @@ canonical experiment, including the I2 dedup annotation).
 
 ## Top 5 validation findings (single seed = 42)
 
-1. **P2 (extreme-rain penalty) is directionally better than I5 on every
-   continuous metric**: MAE Δ = −0.21, RMSE Δ = −0.31, SSIM Δ = +0.078.
-   All three have raw p = 0.0156 (sign-flip, n=7 events); Holm-adjusted
-   p = 0.094 across the 6-contrast MAE family — descriptive-significant
-   but not inferentially significant at the preregistered gate. **Not
-   publishable as an effect** at this seed.
-2. **P1 (smoothness penalty) is directionally worse than I5 on every
-   continuous metric**: MAE Δ = +0.020, SSIM Δ = +0.0015, both raw p =
-   0.0156. Same Holm status as P2; same conclusion.
+1. **P1 (smoothness penalty) is directionally BETTER than I5 on every
+   continuous validation metric** at seed 42: MAE Δ = +0.020, RMSE
+   Δ = +0.019, SSIM Δ = +0.0015. MAE and SSIM both have raw paired
+   sign-flip p = 0.0156 on n = 7 events; 95% bootstrap CI on MAE
+   excludes zero on the better side. Holm-adjusted p = 0.094 across the
+   6-contrast MAE family — descriptive-significant but **not**
+   inferentially significant at the preregistered family gate.
+   **Not publishable as an established effect** at this seed;
+   multi-seed confirmation is required.
+2. **P2 (extreme-rain penalty) substantially WORSENS continuous metrics
+   at seed 42, while increasing extreme-rain POD at the cost of FAR**:
+   MAE Δ = −0.21, RMSE Δ = −0.31, SSIM Δ = −0.078 (all raw p = 0.0156,
+   CIs exclude zero on the worse side). Trade-off: POD@5 +0.120,
+   POD@10 +0.169, but FAR@5 +0.177, FAR@10 +0.381 (raw p = 0.125, n=4).
+   Holm-adjusted p = 0.094 — descriptive-significant, not
+   inferentially significant. The paper may report the trade-off
+   qualitatively only; an inductive-bias claim about P2 is OUT OF SCOPE
+   until multi-seed confirmation.
 3. **I3 (CMA) shows a low-threshold categorical gain at τ = 5 mm/h**:
-   CSI Δ = +0.020, HSS Δ = +0.024, both p = 0.125 with n=4 events. CIs
-   exclude zero on the better side for CSI and HSS.
+   CSI Δ = +0.020, HSS Δ = +0.024, both p = 0.125 with n = 4 events. CIs
+   exclude zero on the better side for CSI and HSS. Continuous metrics
+   are slightly negative (I3 marginally worse than I2 on event-mean
+   MAE/RMSE/SSIM).
 4. **I5 (terrain geometry) is statistically indistinguishable from I4
    (static terrain)** on continuous metrics at this seed: MAE p = 1.0,
    RMSE p = 0.45, SSIM p = 0.125. The 12-channel geometry does not beat
@@ -482,11 +548,11 @@ canonical experiment, including the I2 dedup annotation).
 ## Top 3 scientific risks
 
 1. **Single-seed inference.** The five descriptively-significant
-   findings (P1 worse, P2 better, I3 categorical@5, etc) are all
-   observed at seed 42 only. At n_event = 7 on validation, the
-   threshold for multi-seed confirmation is the dominant uncertainty
-   source. Multi-seed runs are required before any of these enter the
-   paper as an effect.
+   findings (P1 better on continuous, P2 worse on continuous, P2 POD↑/
+   FAR↑ trade-off, I3 categorical@5, I5≈I4) are all observed at seed 42
+   only. At n_event = 7 on validation, the threshold for multi-seed
+   confirmation is the dominant uncertainty source. Multi-seed runs are
+   required before any of these enter the paper as an effect.
 2. **Categorical n_pairs collapse at τ = 20 / 30.** Multiple contrasts
    lose 4–5 events because few validation events produce rain at
    τ ≥ 20 mm/h in both baseline and candidate. The I3 − I2 signal at
@@ -512,7 +578,8 @@ canonical experiment, including the I2 dedup annotation).
    seeds; bootstrap on event differences, NOT on per-seed aggregates.
    Holm correction within the (metric, threshold, seed) family; this
    keeps the preregistered family size fixed and adds seed as a
-   blocking factor.
+   blocking factor. Do NOT treat `(seed, event)` cells as IID
+   observations. See `docs/MULTISEED_PROTOCOL_FREEZE.md`.
 4. **Stop condition for paper**: if any Axis II effect is Holm-adjusted
    p < 0.05 across the 5-seed pooled MAE / RMSE / SSIM families, the
    paper can claim the effect. Otherwise, the paper reports

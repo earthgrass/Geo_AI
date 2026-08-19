@@ -63,26 +63,27 @@ Given identical all-12-channel inputs and the same ResConvLSTM backbone, do smoo
 - Paired differences per metric per event.
 - Caterpillar / event-scatter figures.
 - **Validation-only numerical results (single seed = 42, n_events = 7 for
-  continuous, n = 3–4 for categorical@τ):**
+  continuous, n = 3–4 for categorical@τ).** Improvement-delta convention:
+  positive Δ ⇒ candidate better than baseline (see
+  `src/evaluation/evaluator.py::paired_event_differences`).
 
-  | Contrast | MAE Δ | RMSE Δ | SSIM Δ | MAE raw p | MAE Holm p |
-  |---|---:|---:|---:|---:|---:|
-  | I3 − I2 (CMA channels added) | −0.011 | −0.014 | −0.001 | 0.125 | 0.750 |
-  | I4 − I3 (static terrain added) | +0.002 | −0.001 | +0.0005 | 0.453 | 1.000 |
-  | I5 − I4 (terrain geometry added) | −0.002 | −0.003 | −0.0003 | 1.000 | 1.000 |
+  | Contrast | MAE Δ | RMSE Δ | SSIM Δ | MAE raw p | MAE Holm p | Direction (continuous) |
+  |---|---:|---:|---:|---:|---:|---|
+  | I3 − I2 (CMA channels added) | −0.011 | −0.014 | −0.001 | 0.125 | 0.750 | I3 marginally worse |
+  | I4 − I3 (static terrain added) | +0.002 | −0.001 | +0.0005 | 0.453 | 1.000 | Indistinguishable |
+  | I5 − I4 (terrain geometry added) | −0.002 | −0.003 | −0.0003 | 1.000 | 1.000 | I5 indistinguishable from I4 |
 
-  Positive Δ on lower-is-better metrics = baseline better; positive Δ on
-  higher-is-better metrics = candidate better. **No Axis I contrast is
-  statistically significant at the preregistered Holm gate** on the MAE
-  family. Categorical@τ = 5 mm/h shows a borderline positive Δ for
-  I3 − I2 (CSI Δ = +0.020, HSS Δ = +0.024, both raw p = 0.125 with n = 4
-  events) but this is descriptive-only at this seed and at this n.
+  **No preregistered continuous-metric Axis I contrast reaches adjusted
+  significance at this seed.** Categorical@τ = 5 mm/h shows a borderline
+  positive Δ for I3 − I2 (CSI Δ = +0.020, HSS Δ = +0.024, both raw p =
+  0.125 with n = 4 events) but this is descriptive-only.
 
 - **Interpretation bound:** at this single seed and n = 7 validation
-  events, the three adjacent information contrasts are *descriptively*
-  neutral. I5 does not beat I4 under the current GPM 0.1° reprojection;
-  the 12-channel terrain geometry does not carry signal that the
-  single static-terrain channel misses at this scale.
+  events, terrain geometry I5 vs I4 is currently indistinguishable on
+  continuous metrics; no preregistered continuous-metric Axis I
+  contrast reaches Holm-adjusted significance. The paper reports the
+  I5 − I4 contrast as "indistinguishable at this resolution", not as
+  a contradiction of any terrain-effect claim.
 
 ## 6. Axis II — Loss / inductive-bias ablation (P1 − P0, P2 − P0, P3 − P0)
 
@@ -91,12 +92,14 @@ Given identical all-12-channel inputs and the same ResConvLSTM backbone, do smoo
 - Loss components (MSE, Smooth, Extreme), lambda values frozen.
 - I5 ≡ P0 same artifact identity (verifier prints the same manifest_sha256).
 - Tables `axis_ii_setup.csv`, paired differences, trade-off figures.
+- **Validation-only numerical results.** Improvement-delta convention:
+  positive Δ ⇒ candidate better than baseline.
 
-  | Contrast | MAE Δ | RMSE Δ | SSIM Δ | MAE raw p | MAE Holm p |
-  |---|---:|---:|---:|---:|---:|
-  | P1 − P0 (smoothness penalty) | **+0.020** | +0.019 | **+0.0015** | **0.0156** | **0.094** |
-  | P2 − P0 (extreme-rain penalty) | **−0.210** | **−0.312** | **−0.078** | **0.0156** | **0.094** |
-  | P3 − P0 (smooth + extreme) | −0.080 | −0.152 | −0.024 | 1.000 | 1.000 |
+  | Contrast | MAE Δ | RMSE Δ | SSIM Δ | MAE raw p | MAE Holm p | Continuous direction |
+  |---|---:|---:|---:|---:|---:|---|
+  | P1 − P0 (smoothness penalty) | **+0.020** | +0.019 | **+0.0015** | **0.0156** | **0.094** | P1 directionally improves |
+  | P2 − P0 (extreme-rain penalty) | **−0.210** | **−0.312** | **−0.078** | **0.0156** | **0.094** | P2 substantially worsens |
+  | P3 − P0 (smooth + extreme) | −0.080 | −0.152 | −0.024 | 1.000 | 1.000 | Same trade-off direction as P2, less extreme |
 
   Raw p = 0.0156 on n = 7 paired events ⇒ descriptive-significant.
   Holm-adjusted p = 0.094 across the 6-contrast MAE family ⇒ NOT
@@ -104,13 +107,28 @@ Given identical all-12-channel inputs and the same ResConvLSTM backbone, do smoo
   contrast crosses the preregistered family-adjusted significance
   threshold at this seed.**
 
-- **Interpretation bound:** at this single seed, the smoothness penalty
-  (P1) is *directionally worse* than MSE alone on every continuous
-  metric; the extreme-rain penalty (P2) is *directionally better* on
-  every continuous metric. **Neither reaches Holm-adjusted
-  significance**, and the paper MUST NOT claim either effect as an
-  established empirical result. Multi-seed confirmation (see §11) is the
-  gate for any inferential paper claim.
+- **Interpretation bound:**
+  - **P1 (smoothness penalty) directionally improves continuous
+    validation metrics at seed 42**; the raw paired sign-flip evidence
+    is strong (p_raw = 0.0156 on n = 7 events) but does not survive
+    the preregistered Holm family correction (p_holm = 0.094). The
+    categorical@5 mm/h signal goes the other way (CSI Δ = −0.007,
+    FAR Δ = +0.019); this is reported as a mixed trade-off, not as a
+    continuous-only claim.
+  - **P2 (extreme-rain penalty) substantially worsens continuous
+    metrics, while potentially increasing extreme-rain detection
+    sensitivity / POD at the cost of false alarms.** At this seed,
+    POD@5 Δ = +0.120, POD@10 Δ = +0.169 (raw p = 0.125, n = 4), but
+    FAR@5 Δ = +0.177, FAR@10 Δ = +0.381 (raw p = 0.125, n = 4), and
+    HSS@10 Δ = −0.058 (joint score worse). The paper reports this
+    trade-off; it does NOT claim P2 is better on validation overall.
+  - **P3 has the same trade-off direction as P2 but is generally less
+    extreme**; continuous diffs are smaller and confidence intervals
+    cross zero.
+
+  **Multi-seed confirmation (see §11 and
+  `docs/MULTISEED_PROTOCOL_FREEZE.md`) is the gate for any
+  inferential paper claim about P1 / P2 / P3.**
 
 ## 7. Evaluator v2 and statistical surface
 
@@ -131,12 +149,14 @@ Given identical all-12-channel inputs and the same ResConvLSTM backbone, do smoo
 
 **Validation values (single seed = 42) — see `deliverables/REAL_GPU_RESULT_AUDIT.md` §E, §F, §G for the full set.** Headline:
 
-- Event-macro MAE: I0 = 0.138, I2 = 0.131, I3 = 0.143, I4 = 0.140, I5 = 0.143,
+- Event-macro MAE: I0 = 0.138, I2 = 0.131, I3 = 0.143, I4 = 0.140, I5/P0 = 0.143,
   P1 = 0.123, P2 = 0.353, P3 = 0.223. I1 (PlainConvLSTM) and B1 (TrajGRU)
   are backbone sanity only.
-- Best formal contrast on validation: P2 − I5 with MAE Δ = −0.21 mm/h
-  (raw p = 0.0156, Holm-adjusted p = 0.094 across the 6-contrast MAE
-  family — **not inferentially significant** at the preregistered gate).
+- Best directional continuous-metric findings on validation: P1 − I5
+  with MAE Δ = +0.020 mm/h (P1 better, raw p = 0.0156, Holm-adjusted
+  p = 0.094 — **not inferentially significant**); P2 − I5 with MAE Δ
+  = −0.21 mm/h (P2 worse on continuous, with POD↑/FAR↑ trade-off at
+  τ = 5/10 mm/h, same Holm status).
 - No contrast is Holm-adjusted p < 0.05 at this seed.
 
 **TEST RESULTS ARE NOT REPORTED IN THIS PAPER AT THIS REVISION.
