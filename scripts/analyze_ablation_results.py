@@ -141,6 +141,38 @@ def _load_json(path: Path) -> Dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _unwrap_v2_payload(payload: Dict, source: Path) -> Tuple[Dict, Dict]:
+    """Unwrap the v2 result JSON written by ``reporting.write_v2_json``.
+
+    The writer produces ``{"model": str, "result": <evaluator result>,
+    [extra fields...]}``. The inner ``result`` block is the authoritative
+    evaluator output. Returns ``(inner_result, wrapper_payload)``.
+
+    Fails fast with a precise message if the wrapper is missing or
+    malformed; legacy un-wrapped format (top-level ``protocol_id`` etc.)
+    is NOT accepted.
+    """
+    if not isinstance(payload, dict):
+        raise ContractViolation(
+            f"{source}: payload is not a JSON object."
+        )
+    if "result" not in payload:
+        raise ContractViolation(
+            f"{source}: missing required wrapper key 'result'. "
+            f"This file must be written by "
+            f"src.evaluation.reporting.write_v2_json (which emits a "
+            f"{{'model': ..., 'result': ...}} wrapper). Legacy "
+            f"un-wrapped format (top-level protocol_id/split/n_events) "
+            f"is NOT accepted by this analyzer."
+        )
+    inner = payload["result"]
+    if not isinstance(inner, dict):
+        raise ContractViolation(
+            f"{source}: payload['result'] is not a JSON object."
+        )
+    return inner, payload
+
+
 def _validate_manifest(manifest: Dict, manifest_path: Path) -> None:
     """FAIL FAST on any fingerprint violation."""
     def _check(key: str, expected) -> None:
@@ -212,7 +244,8 @@ def load_results(
         _validate_manifest(manifest, manifest_path)
 
         result_v2_path = manifest_path.parent / "result_v2.json"
-        result = _load_json(result_v2_path)
+        payload = _load_json(result_v2_path)
+        result, wrapper = _unwrap_v2_payload(payload, result_v2_path)
         _validate_result(result, manifest_path)
 
         for alias in manifest["alias_ids"]:

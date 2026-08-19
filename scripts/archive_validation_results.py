@@ -227,6 +227,36 @@ def _validate_result_v2(r: Dict, source_dir: Path) -> None:
             f"{EXPECTED_N_WINDOWS}; got {r.get('n_windows')}.")
 
 
+def _unwrap_v2_payload(payload: Dict, source: Path) -> Tuple[Dict, Dict]:
+    """Unwrap the v2 result JSON written by ``reporting.write_v2_json``.
+
+    The writer produces ``{"model": str, "result": <evaluator result>}``.
+    Returns ``(inner_result, wrapper_payload)``. Fails fast if the wrapper
+    is missing or malformed; legacy un-wrapped format is NOT accepted.
+
+    The original wrapper bytes are NEVER rewritten — the archiver preserves
+    the GPU-written ``result_v2.json`` byte-for-byte on copy. This helper
+    only parses; it does not modify the source file.
+    """
+    if not isinstance(payload, dict):
+        raise ArchiveError(f"{source}: payload is not a JSON object.")
+    if "result" not in payload:
+        raise ArchiveError(
+            f"{source}: missing required wrapper key 'result'. "
+            f"This file must be written by "
+            f"src.evaluation.reporting.write_v2_json (which emits a "
+            f"{{'model': ..., 'result': ...}} wrapper). Legacy "
+            f"un-wrapped format (top-level protocol_id/split/n_events) "
+            f"is NOT accepted by the archiver."
+        )
+    inner = payload["result"]
+    if not isinstance(inner, dict):
+        raise ArchiveError(
+            f"{source}: payload['result'] is not a JSON object."
+        )
+    return inner, payload
+
+
 # ---------------------------------------------------------------------------
 # Canonical-name resolution
 # ---------------------------------------------------------------------------
@@ -255,7 +285,8 @@ def _plan_one(source_dir: Path) -> Plan:
         raise ArchiveError(f"{source_dir}: missing result_v2.json.")
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    result_v2 = json.loads(result_v2_path.read_text(encoding="utf-8"))
+    payload = json.loads(result_v2_path.read_text(encoding="utf-8"))
+    result_v2, _wrapper = _unwrap_v2_payload(payload, result_v2_path)
     _validate_manifest(manifest, manifest_path)
     _validate_result_v2(result_v2, source_dir)
 

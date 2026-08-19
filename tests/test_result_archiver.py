@@ -74,18 +74,29 @@ def _manifest_dict(**overrides) -> dict:
     return m
 
 
-def _result_v2_dict(per_event: dict[int, dict] | None = None) -> dict:
+def _result_v2_dict(per_event: dict[int, dict] | None = None,
+                    model: str = "I2_resconvlstm_seed42_v2",
+                    flat: bool = False) -> dict:
+    """Return a v2 result dict in the wrapper format produced by
+    ``src.evaluation.reporting.write_v2_json``:
+
+        {"model": str, "result": {...evaluator fields...}}
+
+    Set ``flat=True`` to emit the legacy un-wrapped format (used only by
+    negative tests that assert the archiver rejects it).
+    """
     pe: dict = {}
     for tid in range(1, EXPECTED_N_EVENTS + 1):
         pe[str(tid)] = {
             "MAE_event": 1.0, "RMSE_event": 1.0, "SSIM_event_mean": 0.5,
             "categorical": {
-                f"CSI_{t:g}mmh": {"CSI": 0.2, "POD": 0.4, "FAR": 0.6,
-                                  "HSS": 0.1, "BIAS": 1.0, "ACC": 0.6}
+                f"{t:g}mmh" if float(t).is_integer() else f"{t}mmh":
+                    {"CSI": 0.2, "POD": 0.4, "FAR": 0.6,
+                     "HSS": 0.1, "BIAS": 1.0, "ACC": 0.6}
                 for t in (5, 10, 20, 30)
             },
         }
-    return {
+    inner = {
         "protocol_id": EXPECTED_PROTOCOL_ID,
         "split": EXPECTED_SPLIT,
         "test_status": EXPECTED_TEST_STATUS,
@@ -95,6 +106,9 @@ def _result_v2_dict(per_event: dict[int, dict] | None = None) -> dict:
         "thresholds": [5.0, 10.0, 20.0, 30.0],
         "per_event": pe,
     }
+    if flat:
+        return inner
+    return {"model": model, "result": inner}
 
 
 def _write_source(out_root: Path, exp_id: str,
@@ -254,28 +268,28 @@ def test_validate_manifest_smoke_true(tmp_path):
 
 
 def test_validate_result_v2_wrong_n_events(tmp_path):
-    r = _result_v2_dict()
+    r = _result_v2_dict(flat=True)
     r["n_events"] = 5
     with pytest.raises(ArchiveError, match="n_events"):
         _validate_result_v2(r, tmp_path)
 
 
 def test_validate_result_v2_wrong_split(tmp_path):
-    r = _result_v2_dict()
+    r = _result_v2_dict(flat=True)
     r["split"] = "test"
     with pytest.raises(ArchiveError, match="split"):
         _validate_result_v2(r, tmp_path)
 
 
 def test_validate_result_v2_wrong_protocol(tmp_path):
-    r = _result_v2_dict()
+    r = _result_v2_dict(flat=True)
     r["protocol_id"] = "evaluation_v1"
     with pytest.raises(ArchiveError, match="protocol_id"):
         _validate_result_v2(r, tmp_path)
 
 
 def test_validate_result_v2_unsealed(tmp_path):
-    r = _result_v2_dict()
+    r = _result_v2_dict(flat=True)
     r["test_status"] = "UNSEALED"
     with pytest.raises(ArchiveError, match="test_status"):
         _validate_result_v2(r, tmp_path)
@@ -413,6 +427,55 @@ def test_enforce_i5_p0_identity_mismatch(tmp_path):
     plan_b = _plan_one(b)
     with pytest.raises(ArchiveError, match="artifact identity"):
         _enforce_i5_p0_identity([plan_a, plan_b])
+
+
+# ---------------------------------------------------------------------------
+# Wrapper-format integration (real artifact schema)
+# ---------------------------------------------------------------------------
+
+def test_plan_one_requires_wrapper_result_key(tmp_path):
+    """Source result_v2.json without the wrapper ``'result'`` key MUST be
+    rejected — the archiver cannot adapt to it without rewriting the source
+    bytes. The error message must reference ``write_v2_json``."""
+    outputs = tmp_path / "outputs"
+    src = outputs / "I2_resconvlstm_seed42"
+    src.mkdir(parents=True)
+    (src / "manifest.json").write_text(
+        json.dumps(_manifest_dict(
+            exp_id="I2_resconvlstm_seed42", alias_ids=["I2"])),
+        encoding="utf-8",
+    )
+    # Write legacy un-wrapped format (top-level evaluator fields):
+    inner = _result_v2_dict(flat=True)
+    (src / "result_v2.json").write_text(json.dumps(inner), encoding="utf-8")
+    with pytest.raises(ArchiveError,
+                       match="missing required wrapper key 'result'"):
+        _plan_one(src)
+
+
+def test_plan_one_accepts_canonical_wrapper(tmp_path):
+    """Source result_v2.json with the canonical wrapper is accepted."""
+    outputs = tmp_path / "outputs" / "backbone_gate"
+    src = _write_source(outputs, "I2_resconvlstm_seed42")
+    plan = _plan_one(src)
+    # The plan stores the unwrapped inner result (so downstream callers
+    # don't have to re-unwrap).
+    assert plan.result_v2["protocol_id"] == EXPECTED_PROTOCOL_ID
+    assert plan.result_v2["n_events"] == EXPECTED_N_EVENTS
+
+
+def test_archive_one_preserves_source_result_v2_bytes(tmp_path):
+    """Byte-for-byte preservation: the archiver must copy the source
+    ``result_v2.json`` as-is (no rewrite, no re-serialization)."""
+    outputs = tmp_path / "outputs" / "backbone_gate"
+    src = _write_source(outputs, "I2_resconvlstm_seed42")
+    src_bytes = (src / "result_v2.json").read_bytes()
+    plan = _plan_one(src)
+    target_root = tmp_path / "results"
+    archive_one(plan, target_root, force_rewrite=False)
+    target = target_root / "I2_resconvlstm_seed42_v2"
+    # Bytes identical to source (same indentation, same newline style).
+    assert (target / "result_v2.json").read_bytes() == src_bytes
 
 
 # ---------------------------------------------------------------------------

@@ -82,9 +82,19 @@ def _make_manifest(exp_id: str = "I2_resconvlstm_seed42",
 
 def _make_result_v2(per_event_metrics: dict[str, dict],
                     n_events: int = EXPECTED_N_EVENTS,
-                    n_windows: int = EXPECTED_N_WINDOWS) -> dict:
-    """per_event_metrics: {typhoon_id: {metric: float, categorical: {key: {m: v}, ...}, ...}}"""
-    return {
+                    n_windows: int = EXPECTED_N_WINDOWS,
+                    model: str = "I2_resconvlstm_seed42",
+                    flat: bool = False) -> dict:
+    """Build the wrapper format produced by ``src.evaluation.reporting.write_v2_json``.
+
+    per_event_metrics: {typhoon_id: {metric: float, categorical: {key: {m: v}, ...}, ...}}
+
+    Returns ``{"model": str, "result": {...evaluator dict...}}``.
+
+    If ``flat=True``, the legacy un-wrapped format is emitted instead — used
+    only by negative tests that assert the analyzer rejects it.
+    """
+    inner = {
         "protocol_id": PROTOCOL_ID,
         "split": EXPECTED_SPLIT,
         "test_status": EXPECTED_TEST_STATUS,
@@ -94,6 +104,9 @@ def _make_result_v2(per_event_metrics: dict[str, dict],
         "thresholds": [5.0, 10.0, 20.0, 30.0],
         "per_event": {tid: m for tid, m in per_event_metrics.items()},
     }
+    if flat:
+        return inner
+    return {"model": model, "result": inner}
 
 
 def _populate_experiment(
@@ -202,11 +215,11 @@ def test_metric_direction_higher_is_better():
     base = _make_result_v2(_synth_per_event([
         {"mae": 10.0, "rmse": 10.0, "ssim": 0.5,
          "categorical": _cat_buckets(0.2, 0.4, 0.6, 0.1, 1.5, 0.6, 5.0)}
-    ] * 7))
+    ] * 7), flat=True)
     cand = _make_result_v2(_synth_per_event([
         {"mae": 5.0, "rmse": 5.0, "ssim": 0.8,
          "categorical": _cat_buckets(0.4, 0.5, 0.2, 0.2, 1.0, 0.7, 5.0)}
-    ] * 7))
+    ] * 7), flat=True)
     pa_ssim = paired_event_differences(base, cand, metric="SSIM_event_mean",
                                         threshold=None, n_bootstrap=2000, seed=42)
     # candidate - baseline = 0.8 - 0.5 = +0.3
@@ -222,11 +235,11 @@ def test_metric_direction_bias_min_distance_from_one():
     base = _make_result_v2(_synth_per_event([
         {"mae": 10.0, "rmse": 10.0, "ssim": 0.5,
          "categorical": _cat_buckets(0.2, 0.4, 0.6, 0.1, 1.5, 0.6, 5.0)}
-    ] * 7))
+    ] * 7), flat=True)
     cand = _make_result_v2(_synth_per_event([
         {"mae": 10.0, "rmse": 10.0, "ssim": 0.5,
          "categorical": _cat_buckets(0.2, 0.4, 0.6, 0.1, 1.0, 0.6, 5.0)}
-    ] * 7))
+    ] * 7), flat=True)
     pa = paired_event_differences(base, cand, metric="BIAS",
                                   threshold=5.0, n_bootstrap=2000, seed=42)
     # |1.5 - 1| - |1.0 - 1| = 0.5 - 0.0 = 0.5
@@ -598,6 +611,47 @@ def test_window_level_significance_forbidden(tmp_path):
                     include_backbone_sanity=False)
     finally:
         A.paired_event_differences = real_ped
+
+
+# ---------------------------------------------------------------------------
+# 14b. Wrapper-format integration (real artifact schema)
+# ---------------------------------------------------------------------------
+
+def test_wrapper_format_missing_result_key_fails(tmp_path):
+    """A result_v2.json written without the ``{'model': ..., 'result': ...}``
+    wrapper (the actual schema produced by ``src.evaluation.reporting.
+    write_v2_json``) MUST be rejected with a precise error."""
+    results_dir = tmp_path / "results"
+    pe = {"1": {"MAE_event": 1.0, "RMSE_event": 1.0, "SSIM_event_mean": 0.5,
+                "categorical": _cat_buckets_all(0.2, 0.4, 0.6, 0.1, 1.0, 0.6)}}
+    d = results_dir / "I2_resconvlstm_seed42"
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(_to_json(_make_manifest(
+        exp_id="I2_resconvlstm_seed42", aliases=["I2"])), encoding="utf-8")
+    # Legacy / un-wrapped format on disk:
+    (d / "result_v2.json").write_text(_to_json(pe), encoding="utf-8")
+    with pytest.raises(ContractViolation,
+                       match="missing required wrapper key 'result'"):
+        load_results(results_dir)
+
+
+def test_wrapper_format_accepted(tmp_path):
+    """The canonical wrapper format ``{model, result}`` is accepted and the
+    inner evaluator result is what gets threaded into the analyzer."""
+    results_dir = tmp_path / "results"
+    _populate_experiment(results_dir, "I2",
+                         _synth_per_event([
+                             {"mae": 1.0, "rmse": 1.0, "ssim": 0.5,
+                              "categorical": _cat_buckets_all(
+                                  0.2, 0.4, 0.6, 0.1, 1.0, 0.6)}
+                         ] * 7))
+    alias_to_result, alias_to_manifest = load_results(results_dir)
+    inner = alias_to_result["I2"]
+    # Inner result has the v2 evaluator fields at the top level.
+    assert inner["protocol_id"] == EXPECTED_PROTOCOL_ID
+    assert inner["n_events"] == EXPECTED_N_EVENTS
+    assert "per_event" in inner
+    assert "5mmh" in inner["per_event"]["1"]["categorical"]
 
 
 # ---------------------------------------------------------------------------
